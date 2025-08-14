@@ -1,0 +1,37 @@
+camera_index: 0
+resolution: [1280, 720]
+fullscreen: true
+idle_text: "👋 Acércate y salúdanos"
+prompt_wave_text: "Levanta tu mano y saluda 👋"
+greeting_texts:
+  - "¡Hola! Bienvenido/a a Ingeniería Civil Informática UNAB"
+  - "Si quieres saber más, muéstranos 👍"
+qr:
+  show_on_thumbs_up: true
+  url: "https://www.unab.cl/admision/ingenieria-civil-informatica"
+tts:
+  enabled: true
+  rate: 175
+  volume: 1.0
+cooldowns:
+  wave_seconds: 6
+  thumbs_seconds: 6
+wave:
+  window_seconds: 1.5
+  amplitude_threshold: 0.04
+  min_peaks: 3
+thumbs:
+  tip_above_wrist_margin: 0.02
+  other_fingers_folded: true
+brand:
+  primary: "#A00321"
+  text: "#FFFFFF"
+assets:
+  logo_path: "src/assets/logo_unab.png"
+metrics:
+  csv_path: "metrics.csv"
+keys:
+  quit: "q"
+  mute: "m"
+  fullscreen_toggle: "f"
+  reset: "r"
