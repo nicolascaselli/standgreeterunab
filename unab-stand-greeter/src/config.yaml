@@ -2,10 +2,10 @@ camera_index: 1
 resolution: [1920, 1080]
 fullscreen: true
 idle_text: "Acércate y salúdanos"
-prompt_wave_text: "Levanta tu mano y saluda"
+prompt_wave_text: "Levanta tu mano y saluda 👋"
 greeting_texts:
   - "¡Hola! Bienvenido/a a Ingeniería Civil Informática UNAB"
-  - "Si quieres saber más, muéstranos"
+  - "Si quieres saber más, muéstranos el pulgar hacia arriba 👍"
 qr:
   show_on_thumbs_up: true
   url: https://www.unab.cl/carreras/mallas/ing_civil_informatica.pdf
@@ -39,7 +39,7 @@ debug:
   show_panel: true
   draw_landmarks: true
   panel:
-    anchor: "tl"          # opciones: tl, tc, tr, ml, cc, mr, bl, bc, br
+    anchor: "br"          # opciones: tl, tc, tr, ml, cc, mr, bl, bc, br
     margin: [20, 20]      # [x, y] píxeles desde el borde según anchor
     width_ratio: 0.25     # ancho del panel relativo al ancho de la pantalla
     height_ratio: 0.28    # alto del panel relativo al alto de la pantalla

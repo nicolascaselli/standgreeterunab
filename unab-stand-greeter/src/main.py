@@ -12,6 +12,8 @@ import os
 import urllib.request
 import ssl
 from PIL import ImageFont, Image, ImageDraw
+import emoji
+import platform
 
 # --- Definir rutas base para que funcione independientemente del CWD ---
 # Ruta al directorio del script actual (src)
@@ -45,9 +47,6 @@ def draw_landmarks_basic(img, pose, width, height):
         cv2.circle(img, (cx, cy), 5, key_color, -1, cv2.LINE_AA)
     # Devuelve la imagen modificada
     return img
-def remove_emojis(text):
-    # Elimina emojis y caracteres fuera del rango Unicode latino básico
-    return re.sub(r'[^\w\s.,;:¡!¿?áéíóúÁÉÍÓÚñÑüÜ/-]', '', text)
 
 # ---------- Utilidades HUD / overlay ----------
 def overlay_alpha(img, overlay, x, y, alpha=0.6):
@@ -163,28 +162,71 @@ def compute_panel_xy(anchor, panel_w, panel_h, width, height, margin_xy):
 
 
 def setup_emoji_font():
-    """Verifica y descarga la fuente de emojis si no existe, luego la carga."""
-    # La ruta ahora se construye a partir de la raíz del proyecto
-    font_path = PROJECT_ROOT / "src/assets/fonts/NotoColorEmoji-Regular.ttf"
+    """Verifica y carga la fuente de emojis según el sistema operativo."""
+    system = platform.system()
+
+    # Rutas de fuentes según el sistema operativo
+    if system == "Darwin":  # macOS
+        system_fonts = [
+            "/System/Library/Fonts/Apple Color Emoji.ttc",
+            "/Library/Fonts/Apple Color Emoji.ttc"
+        ]
+    elif system == "Windows":
+        system_fonts = [
+            "C:/Windows/Fonts/seguiemj.ttf",  # Segoe UI Emoji
+            "C:/Windows/Fonts/NotoColorEmoji.ttf"
+        ]
+    else:  # Linux y otros
+        system_fonts = [
+            "/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf",
+            "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
+            "/system/fonts/NotoColorEmoji.ttf"
+        ]
+
+    # Intentar usar fuentes del sistema primero
+    for font_path in system_fonts:
+        if Path(font_path).exists():
+            print(f"INFO: Usando fuente de emojis del sistema: {font_path}")
+            return Path(font_path)
+
+    print(f"INFO: No se encontraron fuentes de emojis del sistema en {system}")
+
+    # Fallback a NotoColorEmoji descargada
+    font_path = PROJECT_ROOT / "src/assets/fonts/NotoColorEmoji.ttf"
     font_url = "https://github.com/googlefonts/noto-emoji/raw/main/fonts/NotoColorEmoji.ttf"
 
     if not font_path.exists():
-        print("INFO: Fuente de emojis no encontrada. Intentando descargar...")
+        print("INFO: Intentando descargar NotoColorEmoji...")
         try:
             font_path.parent.mkdir(parents=True, exist_ok=True)
+
             # Crear un contexto SSL que no verifique certificados
             context = ssl._create_unverified_context()
-            with urllib.request.urlopen(font_url, context=context) as response, open(font_path, 'wb') as out_file:
-                out_file.write(response.read())
-            print(f"INFO: Fuente descargada y guardada en '{font_path}'")
+
+            # Agregar headers para evitar bloqueos
+            req = urllib.request.Request(font_url)
+            req.add_header('User-Agent', 'Mozilla/5.0 (compatible; emoji-downloader/1.0)')
+
+            with urllib.request.urlopen(req, context=context, timeout=30) as response:
+                if response.status == 200:
+                    with open(font_path, 'wb') as out_file:
+                        out_file.write(response.read())
+                    print(f"INFO: Fuente descargada y guardada en '{font_path}'")
+                else:
+                    print(f"ERROR: HTTP {response.status} al descargar la fuente")
+                    return None
+
         except Exception as e:
             print(f"ADVERTENCIA: No se pudo descargar la fuente de emojis: {e}")
             return None
+    else:
+        print(f"INFO: Fuente de emojis encontrada en '{font_path}'")
 
-    try:
-        return ImageFont.truetype(str(font_path), 38)
-    except IOError:
-        print(f"ADVERTENCIA: No se pudo cargar la fuente desde '{font_path}'. Los emojis no se mostrarán.")
+    # Verificar que el archivo descargado es válido
+    if font_path.exists() and font_path.stat().st_size > 1000:  # Al menos 1KB
+        return font_path
+    else:
+        print("ERROR: La fuente descargada parece estar corrupta")
         return None
 
 
@@ -237,7 +279,7 @@ def main():
     metrics = Metrics(cfg.get("metrics", {}).get("csv_path", "metrics.csv"))
 
     # --- Carga de fuente y assets ---
-    emoji_font = setup_emoji_font()
+    emoji_font_path = setup_emoji_font()
 
     # Cargar fuente principal para textos con tildes
     font_path_abs = PROJECT_ROOT / "src/assets/fonts/Roboto-Regular.ttf"
@@ -257,7 +299,7 @@ def main():
 
     ui_assets = {
         "logo": logo_path_abs,
-        "emoji_font": emoji_font,
+        "emoji_font_path": emoji_font_path,
         "font_path": font_path_abs  # Pasar la ruta de la fuente a UIRenderer
     }
 
@@ -268,12 +310,24 @@ def main():
                     show_qr_panel=False)
 
     # --- Carga de textos y configuración ---
-    # Mantenemos la eliminación de emojis para textos donde no los queremos explícitamente
-    idle_text = remove_emojis(cfg.get("idle_text", "Acércate y salúdanos"))
-    greeting_lines = [remove_emojis(line) for line in cfg.get("greeting_texts", ["¡Hola!", "Bienvenido/a a UNAB"])]
-
-    # Añadimos el emoji al texto de saludo (ya no usamos remove_emojis aquí)
+    idle_text = cfg.get("idle_text", "Acércate y salúdanos")
+    greeting_lines = [line for line in cfg.get("greeting_texts", ["¡Hola! 👋", "Bienvenido/a a UNAB"])]
     prompt_wave_text = cfg.get("prompt_wave_text", "Levanta tu mano y saluda 👋")
+
+    # Debug: verificar que los emojis estén en los textos
+    print(f"DEBUG: Textos con emojis:")
+    print(f"  - greeting_lines[0]: '{greeting_lines[0]}'")
+    print(f"  - prompt_wave_text: '{prompt_wave_text}'")
+
+    # Verificar detección de emojis en greeting_lines[0]
+    for i, char in enumerate(greeting_lines[0]):
+        if emoji.is_emoji(char):
+            print(f"    Emoji detectado en greeting_lines[0] pos {i}: '{char}' (U+{ord(char):04X})")
+
+    # Verificar detección de emojis en prompt_wave_text
+    for i, char in enumerate(prompt_wave_text):
+        if emoji.is_emoji(char):
+            print(f"    Emoji detectado en prompt_wave_text pos {i}: '{char}' (U+{ord(char):04X})")
 
     qr_url = (cfg.get("qr", {}) or {}).get("url", "https://www.unab.cl/carreras/mallas/ing_civil_informatica.pdf")
     wave_cd = cfg.get("cooldowns", {}).get("wave_seconds", 6)
@@ -296,7 +350,7 @@ def main():
     wave_count = 0
     thumbs_up_count = 0
 
-    greet_tts = "Hola! Bienvenido a Ingeniería Civil Informática de la UNAB. Si quieres saber más, muéstranos pulgar arriba."  # Emoji quitado
+    greet_tts = "Hola! Bienvenido a Ingeniería Civil Informática de la UNAB. Si quieres saber más, muéstranos pulgar arriba."
     qr_tts = "Perfecto. Escanea el código QR para conocer la carrera y sus proyectos."
 
     while True:
@@ -363,7 +417,12 @@ def main():
                 metrics.log("state", "WAIT_THUMBS")
 
         elif state == STATE_WAIT_THUMBS:
-            view = ui.render_greeting(view, [greeting_lines[0], "Muéstranos Pulgar arriba 👍 para ver más"])
+            thumbs_text = "Muéstranos Pulgar arriba 👍 para ver más"
+            print(f"DEBUG: thumbs_text: '{thumbs_text}'")
+            for i, char in enumerate(thumbs_text):
+                if emoji.is_emoji(char):
+                    print(f"    Emoji en thumbs_text pos {i}: '{char}' (U+{ord(char):04X})")
+            view = ui.render_greeting(view, [greeting_lines[0], thumbs_text])
             thumbs_up = False
             thumbs_dbg_list = []
             for hand in hands:
@@ -392,7 +451,7 @@ def main():
                 metrics.log("qr_shown")
 
         elif state == STATE_COOLDOWN:
-            view = ui.render_idle(view, "¡Gracias!", "Acércate y salúdanos")  # Emoji quitado
+            view = ui.render_idle(view, "¡Gracias! ✨", "Acércate y salúdanos")
             if elapsed > max(wave_cd, thumbs_cd):
                 state = STATE_IDLE;
                 metrics.log("cooldown_end")

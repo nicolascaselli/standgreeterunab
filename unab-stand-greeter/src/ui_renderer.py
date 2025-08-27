@@ -3,6 +3,8 @@ import cv2
 import qrcode
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+import emoji
+import platform
 
 
 class UIRenderer:
@@ -13,30 +15,136 @@ class UIRenderer:
         self.text_color_rgb = tuple(reversed(self._hex_to_bgr(text_color)))
         self.show_qr_panel = show_qr_panel
         self.qr_cache = {}
+        self.system = platform.system()
 
         # Cargar fuentes
         self.logo = self._load_logo(assets.get("logo"))
-        self.emoji_font = assets.get("emoji_font")
-        self.main_font = None
-        # Inicializar atributos de fuente de emojis
+
+        # Inicializar fuentes como None por defecto
+        self.font_large = None
+        self.font_medium = None
+        self.font_small = None
         self.emoji_font_large = None
         self.emoji_font_medium = None
 
+        # Cargar fuente principal
         font_path = assets.get("font_path")
         if font_path and font_path.exists():
             try:
-                # Tamaños de fuente para diferentes textos
                 self.font_large = ImageFont.truetype(str(font_path), 68)
                 self.font_medium = ImageFont.truetype(str(font_path), 42)
                 self.font_small = ImageFont.truetype(str(font_path), 24)
+                print(f"INFO: Fuente principal cargada desde {font_path}")
             except Exception as e:
                 print(f"ADVERTENCIA: No se pudo cargar la fuente principal: {e}")
-                self.font_large = self.font_medium = self.font_small = None
 
-        # Ajustar el tamaño de la fuente de emojis para que coincida con la fuente principal
-        if self.emoji_font:
-            self.emoji_font_large = self.emoji_font.font_variant(size=58)
-            self.emoji_font_medium = self.emoji_font.font_variant(size=36)
+        # Cargar fuente de emojis con manejo específico por SO
+        emoji_font_path = assets.get("emoji_font_path")
+        if emoji_font_path and emoji_font_path.exists():
+            self._load_emoji_fonts(emoji_font_path)
+        else:
+            print("ADVERTENCIA: No se encontró la fuente de emojis")
+
+    def _load_emoji_fonts(self, emoji_font_path):
+        """Carga fuentes de emojis con configuraciones específicas por SO."""
+        print(f"INFO: Intentando cargar fuente de emojis desde {emoji_font_path} en {self.system}")
+
+        # Configuraciones por sistema operativo
+        if self.system == "Darwin":  # macOS
+            # macOS maneja mejor las fuentes TTC y requiere tamaños específicos
+            font_sizes_large = [68, 64, 60, 56, 48]
+            font_sizes_medium = [42, 40, 36, 32, 28]
+            font_index = 0  # Para fuentes TTC, usar el primer índice
+        elif self.system == "Windows":
+            # Windows con Segoe UI Emoji o NotoColorEmoji
+            font_sizes_large = [72, 68, 64, 60, 56]
+            font_sizes_medium = [44, 42, 40, 36, 32]
+            font_index = 0
+        else:  # Linux y otros
+            font_sizes_large = [68, 64, 60, 56, 48, 40]
+            font_sizes_medium = [42, 40, 36, 32, 28, 24]
+            font_index = 0
+
+        # Intentar cargar fuente grande
+        for size in font_sizes_large:
+            try:
+                if str(emoji_font_path).endswith('.ttc'):
+                    # Para fuentes TTC (principalmente macOS)
+                    self.emoji_font_large = ImageFont.truetype(str(emoji_font_path), size, index=font_index)
+                else:
+                    # Para fuentes TTF regulares
+                    self.emoji_font_large = ImageFont.truetype(str(emoji_font_path), size)
+                print(f"INFO: Fuente de emojis grande cargada con tamaño {size}")
+                break
+            except Exception as e:
+                print(f"DEBUG: Tamaño grande {size} falló: {e}")
+                continue
+
+        # Intentar cargar fuente mediana
+        for size in font_sizes_medium:
+            try:
+                if str(emoji_font_path).endswith('.ttc'):
+                    self.emoji_font_medium = ImageFont.truetype(str(emoji_font_path), size, index=font_index)
+                else:
+                    self.emoji_font_medium = ImageFont.truetype(str(emoji_font_path), size)
+                print(f"INFO: Fuente de emojis mediana cargada con tamaño {size}")
+                break
+            except Exception as e:
+                print(f"DEBUG: Tamaño mediano {size} falló: {e}")
+                continue
+
+        # Verificar que al menos una fuente se cargó
+        if self.emoji_font_large is None and self.emoji_font_medium is None:
+            print("ADVERTENCIA: No se pudo cargar ninguna fuente de emojis")
+            self._try_fallback_emoji_fonts()
+        else:
+            # Verificar que la fuente funciona probando un emoji
+            self._test_emoji_font()
+
+    def _try_fallback_emoji_fonts(self):
+        """Intenta cargar fuentes de emojis alternativas del sistema."""
+        print("INFO: Intentando fuentes de emojis alternativas del sistema...")
+
+        fallback_fonts = []
+
+        if self.system == "Windows":
+            fallback_fonts = [
+                "C:/Windows/Fonts/segmdl2.ttf",  # Segoe MDL2 Assets
+                "arial.ttf"  # Arial como último recurso
+            ]
+        elif self.system == "Darwin":
+            fallback_fonts = [
+                "/System/Library/Fonts/Helvetica.ttc"
+            ]
+        else:  # Linux
+            fallback_fonts = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf"
+            ]
+
+        for font_path in fallback_fonts:
+            if Path(font_path).exists():
+                try:
+                    self.emoji_font_large = ImageFont.truetype(font_path, 68)
+                    self.emoji_font_medium = ImageFont.truetype(font_path, 42)
+                    print(f"INFO: Usando fuente fallback: {font_path}")
+                    return
+                except:
+                    continue
+
+        print("ADVERTENCIA: No se pudo cargar ninguna fuente alternativa")
+
+    def _test_emoji_font(self):
+        """Verifica que la fuente de emojis funciona correctamente."""
+        test_font = self.emoji_font_large or self.emoji_font_medium
+        if test_font:
+            try:
+                test_img = Image.new('RGB', (100, 100), (255, 255, 255))
+                test_draw = ImageDraw.Draw(test_img)
+                test_draw.text((10, 10), "👋", font=test_font, embedded_color=True)
+                print(f"INFO: Fuente de emojis verificada correctamente en {self.system}")
+            except Exception as e:
+                print(f"ADVERTENCIA: Error al verificar fuente de emojis en {self.system}: {e}")
 
     def _load_logo(self, logo_path):
         if not logo_path: return None
@@ -50,56 +158,91 @@ class UIRenderer:
         return cv2.resize(logo, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     def _draw_text_with_emojis(self, draw, text, start_xy, font, emoji_font, fill):
-        """Dibuja texto, cambiando a la fuente de emojis cuando es necesario."""
-        if not font or not emoji_font:  # Fallback si las fuentes no cargaron
-            draw.text(start_xy, text, font=font, fill=fill)
+        """Dibuja texto con manejo específico de emojis por SO."""
+        if not text:
             return
 
         x, y = start_xy
-        for char in text:
-            if char in emoji_font.get_variation_names():
-                # Usar la fuente de emojis y ajustar la posición verticalmente
-                draw.text((x, y - 10), char, font=emoji_font, fill=fill, embedded_color=True)
-                # Usamos getbbox en lugar del obsoleto getsize
-                bbox = emoji_font.getbbox(char)
-                x += bbox[2] - bbox[0]  # Ancho del caracter
+
+        for i, char in enumerate(text):
+            if emoji.is_emoji(char) and emoji_font:
+                # Dibujar emoji con configuraciones específicas por SO
+                try:
+                    if self.system == "Windows":
+                        # En Windows, a veces necesitamos ajustar la posición Y
+                        emoji_y = y - 5
+                    else:
+                        emoji_y = y
+
+                    draw.text((x, emoji_y), char, font=emoji_font, embedded_color=True)
+
+                    # Obtener ancho del emoji
+                    try:
+                        bbox = emoji_font.getbbox(char)
+                        char_width = bbox[2] - bbox[0]
+                    except:
+                        # Fallback si getbbox falla
+                        char_width = emoji_font.getlength(char) if hasattr(emoji_font, 'getlength') else 30
+
+                    x += max(char_width, 20)  # Mínimo 20px de ancho
+
+                except Exception as e:
+                    print(f"ERROR: Error dibujando emoji '{char}' en {self.system}: {e}")
+                    # Fallback: mostrar texto alternativo
+                    if font:
+                        fallback_text = "[emoji]"
+                        draw.text((x, y), fallback_text, font=font, fill=fill)
+                        x += font.getlength(fallback_text) if hasattr(font, 'getlength') else 50
+                    else:
+                        x += 30
             else:
-                # Usar la fuente de texto normal
-                draw.text((x, y), char, font=font, fill=fill)
-                bbox = font.getbbox(char)
-                x += bbox[2] - bbox[0]
+                # Dibujar carácter normal
+                if font:
+                    draw.text((x, y), char, font=font, fill=fill)
+                    try:
+                        bbox = font.getbbox(char)
+                        char_width = bbox[2] - bbox[0]
+                    except:
+                        char_width = font.getlength(char) if hasattr(font, 'getlength') else 10
+                    x += char_width
 
-    def _render_base(self, img, main_text, sub_text=""):
-        # 1. (Opcional) Ya no dibujamos el banner rojo. La línea está comentada/eliminada.
-        # cv2.rectangle(img, (0, 0), (self.width, int(self.height * 0.12)), self.brand_primary_bgr, -1)
-
-        # 2. Convertimos la imagen de la cámara a formato Pillow para dibujar el texto.
+    def _render_base(self, img, *lines):
+        """Renderiza las líneas de texto base con soporte para emojis."""
+        # Convertir imagen a PIL en modo RGB (sin alfa por ahora)
         pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_img)
 
-        # Dibujamos el texto principal con soporte para emojis.
-        # Usamos un color de texto que contraste con el fondo del video (ej. blanco con sombra negra).
-        text_color_with_alpha = self.text_color_rgb + (255,)
-        if self.font_large and self.emoji_font_large:
-            # Dibujar una sombra para mejorar la legibilidad
-            shadow_color = (0, 0, 0, 255)
-            self._draw_text_with_emojis(draw, main_text, (42, 32), self.font_large, self.emoji_font_large, shadow_color)
-            # Dibujar el texto principal
-            self._draw_text_with_emojis(draw, main_text, (40, 30), self.font_large, self.emoji_font_large, text_color_with_alpha)
+        # Colores para texto y sombra
+        text_color = self.text_color_rgb
+        shadow_color = (0, 0, 0)
 
-        # Dibujamos el subtítulo.
-        if sub_text and self.font_medium:
-            # Sombra para el subtítulo
-            draw.text((42, self.height - 78), sub_text, font=self.font_medium, fill=(0, 0, 0))
-            # Texto del subtítulo
-            draw.text((40, self.height - 80), sub_text, font=self.font_medium, fill=self.text_color_rgb)
+        print(f"DEBUG: Renderizando {len(lines)} líneas de texto")
 
-        # 3. Convertimos la imagen con texto de vuelta a formato OpenCV.
+        # Línea principal (grande)
+        if len(lines) > 0 and lines[0]:
+            main_text = str(lines[0])
+            print(f"DEBUG: Línea principal: '{main_text}'")
+            # Sombra
+            if self.font_large:
+                self._draw_text_with_emojis(draw, main_text, (42, 32), self.font_large, self.emoji_font_large, shadow_color)
+                # Texto principal
+                self._draw_text_with_emojis(draw, main_text, (40, 30), self.font_large, self.emoji_font_large, text_color)
+
+        # Subtítulo (mediano)
+        if len(lines) > 1 and lines[1]:
+            sub_text = str(lines[1])
+            print(f"DEBUG: Subtítulo: '{sub_text}'")
+            # Sombra
+            if self.font_medium:
+                self._draw_text_with_emojis(draw, sub_text, (42, self.height - 78), self.font_medium, self.emoji_font_medium, shadow_color)
+                # Texto principal
+                self._draw_text_with_emojis(draw, sub_text, (40, self.height - 80), self.font_medium, self.emoji_font_medium, text_color)
+
+        # Convertir de vuelta a OpenCV
         img_with_text = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-        # 4. Superponemos el logo AL FINAL, para que quede encima de todo.
+        # Superponer logo
         if self.logo is not None:
-            # Usamos la función _overlay_rgba que ya tienes para manejar la transparencia.
             self._overlay_rgba(img_with_text, self.logo, self.width - self.logo.shape[1] - 30, 20)
 
         return img_with_text
@@ -108,26 +251,9 @@ class UIRenderer:
         return self._render_base(img, main_text, sub_text)
 
     def render_greeting(self, img, lines):
-        main_text = lines[0] if lines else ""
-        sub_text = lines[1] if len(lines) > 1 else ""
-
-        # Convierte a Pillow para dibujar texto
-        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        draw = ImageDraw.Draw(pil_img)
-
-        # Dibuja texto principal
-        if self.font_large:
-            draw.text((40, 30), main_text, font=self.font_large, fill=self.text_color_rgb)
-
-        # Dibuja subtítulo con soporte para emojis
-        if sub_text and self.font_medium and self.emoji_font_medium:
-            self._draw_text_with_emojis(draw, sub_text, (40, self.height - 80), self.font_medium,
-                                        self.emoji_font_medium, self.text_color_rgb)
-
-        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        return self._render_base(img, *lines)
 
     def render_qr_panel(self, img, url):
-        # ... (El resto de la clase no necesita cambios)
         if url not in self.qr_cache:
             qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
             qr.add_data(url)
@@ -149,13 +275,15 @@ class UIRenderer:
         cv2.addWeighted(overlay, 0.9, img[panel_y:panel_y + panel_h, panel_x:panel_x + panel_w], 0.1, 0,
                         img[panel_y:panel_y + panel_h, panel_x:panel_x + panel_w])
 
+        # Usar Pillow para el texto del título (sin emojis en este caso)
         pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_img)
 
         title_text = "¡Conoce más sobre la carrera!"
-        bbox = self.font_medium.getbbox(title_text)
-        text_w = bbox[2] - bbox[0]
-        draw.text(((self.width - text_w) // 2, panel_y + 30), title_text, font=self.font_medium, fill=(0, 0, 0))
+        if self.font_medium:
+            bbox = self.font_medium.getbbox(title_text)
+            text_w = bbox[2] - bbox[0]
+            draw.text(((self.width - text_w) // 2, panel_y + 30), title_text, font=self.font_medium, fill=(0, 0, 0))
 
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
@@ -163,20 +291,32 @@ class UIRenderer:
         if fg is None: return
         h, w = fg.shape[:2]
 
-        # Asegurarse de que la imagen de fondo tenga 3 canales (BGR)
-        if bg.shape[2] == 4:
-            bg = bg[:, :, :3]
-
-        # Asegurarse de que la imagen superpuesta tenga 4 canales (BGRA)
-        if fg.shape[2] == 3:
-            # Si no tiene canal alfa, no se puede hacer la superposición transparente
+        # Asegurarse de que las coordenadas estén dentro de los límites
+        if x >= bg.shape[1] or y >= bg.shape[0] or x + w <= 0 or y + h <= 0:
             return
 
-        alpha = fg[:, :, 3] / 255.0
-        bg_roi = bg[y:y+h, x:x+w]
+        # Recortar si es necesario
+        x_start = max(0, x)
+        y_start = max(0, y)
+        x_end = min(bg.shape[1], x + w)
+        y_end = min(bg.shape[0], y + h)
 
-        for c in range(0, 3):
-            bg_roi[:, :, c] = (alpha * fg[:, :, c] + (1 - alpha) * bg_roi[:, :, c])
+        # Calcular offsets para la imagen superpuesta
+        fg_x_start = max(0, -x)
+        fg_y_start = max(0, -y)
+        fg_x_end = fg_x_start + (x_end - x_start)
+        fg_y_end = fg_y_start + (y_end - y_start)
+
+        if fg.shape[2] == 4:  # Si tiene canal alfa
+            alpha = fg[fg_y_start:fg_y_end, fg_x_start:fg_x_end, 3] / 255.0
+            bg_roi = bg[y_start:y_end, x_start:x_end]
+            fg_roi = fg[fg_y_start:fg_y_end, fg_x_start:fg_x_end, :3]
+
+            for c in range(3):
+                bg_roi[:, :, c] = (alpha * fg_roi[:, :, c] + (1 - alpha) * bg_roi[:, :, c])
+        else:
+            # Sin canal alfa, copia directa
+            bg[y_start:y_end, x_start:x_end] = fg[fg_y_start:fg_y_end, fg_x_start:fg_x_end]
 
     def _hex_to_bgr(self, hx):
         hx = hx.lstrip("#")
