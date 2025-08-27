@@ -1,16 +1,8 @@
-import cv2
-import numpy as np
-from PIL import Image, ImageDraw
-import qrcode
-
-
-def hex_to_bgr(hex_color):
-    """Convierte #RRGGBB a (B, G, R)."""
-    h = hex_color.lstrip('#')
-    return tuple(int(h[i:i + 2], 16) for i in (4, 2, 0))
-
-
 # ui_renderer.py
+import cv2
+import qrcode
+import numpy as np
+
 class UIRenderer:
     def __init__(self, width, height, brand_primary="#A00321", text_color="#FFFFFF", assets=None,
                  show_qr_panel=False):
@@ -20,53 +12,91 @@ class UIRenderer:
         self.text_color = text_color
         self.assets = assets or {}
         self.show_qr_panel = show_qr_panel
-        # ... resto init (cache QR, fuentes, etc.)
+        self._qr_cache_url = None
+        self._qr_np = None
+        self._text_color_bgr = self._hex_to_bgr(self.text_color)
+        self._primary_bgr = self._hex_to_bgr(self.brand_primary)
+        self._logo = None
+        logo_path = (self.assets.get("logo") if self.assets else None)
+        if logo_path:
+            lg = cv2.imread(str(logo_path))
+            if lg is not None:
+                # Redimensionar logo (ancho 18% pantalla)
+                max_w = int(self.width * 0.18)
+                if lg.shape[1] > max_w:
+                    scale = max_w / lg.shape[1]
+                    lg = cv2.resize(lg, (int(lg.shape[1] * scale), int(lg.shape[0] * scale)), cv2.INTER_AREA)
+                self._logo = lg
+
+    def render_idle(self, frame, line1, line2):
+        """Pantalla idle con dos líneas centradas y logo opcional arriba."""
+        img = frame
+        h, w = img.shape[:2]
+        cy = int(h * 0.42)
+        self._put_centered(img, line1, (cy - 10), scale=1.1, weight=2)
+        self._put_centered(img, line2, (cy + 50), scale=0.9)
+        if self._logo is not None:
+            lh, lw = self._logo.shape[:2]
+            x = (w - lw) // 2
+            y = int(h * 0.08)
+            img[y:y + lh, x:x + lw] = self._logo
+        return img
+
+    def render_greeting(self, frame, lines):
+        """Pantalla de saludo; lines es lista de 1-3 líneas."""
+        img = frame
+        h, _ = img.shape[:2]
+        base = int(h * 0.40)
+        for i, text in enumerate(lines[:3]):
+            self._put_centered(img, text, base + i * 55, scale=1.0 if i == 0 else 0.9)
+        return img
 
     def render_qr_panel(self, frame, url):
-        """
-        Muestra sólo el QR sin panel de fondo (si show_qr_panel es False).
-        """
-        # Generar / obtener QR (suponiendo cache previa)
-        if not hasattr(self, "_qr_cache_url") or self._qr_cache_url != url:
-            import qrcode
-            qr = qrcode.QRCode(border=1)  # border pequeño sólo del propio QR
+        """Muestra el QR centrado (sin panel decorativo salvo que show_qr_panel=True)."""
+        img = frame
+        # Cache / generar
+        if self._qr_cache_url != url:
+            qr = qrcode.QRCode(border=1)
             qr.add_data(url)
             qr.make(fit=True)
             qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-            import numpy as np
-            self._qr_np = np.array(qr_img)[:, :, ::-1]  # a BGR
+            self._qr_np = np.array(qr_img)[:, :, ::-1]  # RGB->BGR
             self._qr_cache_url = url
 
-        qr_bgr = self._qr_np
-        # Redimensionar si se requiere
+        qr_bgr = self._qr_np.copy()
         max_side = int(self.height * 0.42)
-        h, w = qr_bgr.shape[:2]
-        scale = min(max_side / max(h, w), 1.0)
+        hq, wq = qr_bgr.shape[:2]
+        scale = min(max_side / max(hq, wq), 1.0)
         if scale != 1.0:
-            qr_bgr = cv2.resize(qr_bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-            h, w = qr_bgr.shape[:2]
+            qr_bgr = cv2.resize(qr_bgr, (int(wq * scale), int(hq * scale)), interpolation=cv2.INTER_AREA)
+            hq, wq = qr_bgr.shape[:2]
 
-        # Calcular posición (centrado inferior)
-        margin = 30
-        x = (self.width - w) // 2
-        y = (self.height - h) // 2
+        x = (self.width - wq) // 2
+        y = (self.height - hq) // 2
 
         if self.show_qr_panel:
-            # (Opcional) panel si se reactiva
             pad = 20
             x0, y0 = x - pad, y - pad
-            x1, y1 = x + w + pad, y + h + pad
-            cv2.rectangle(frame, (x0, y0), (x1, y1), (255, 255, 255), -1)
-            cv2.rectangle(frame, (x0, y0), (x1, y1), self._hex_to_bgr(self.brand_primary), 3)
+            x1, y1 = x + wq + pad, y + hq + pad
+            cv2.rectangle(img, (x0, y0), (x1, y1), (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.rectangle(img, (x0, y0), (x1, y1), self._primary_bgr, 3, cv2.LINE_AA)
 
-        # Pegar QR (sin fondo adicional)
-        frame[y:y + h, x:x + w] = qr_bgr
+        img[y:y + hq, x:x + wq] = qr_bgr
+        self._put_centered(img, "Escanea el c\u00F3digo", y + hq + 40, scale=0.9)
+        return img
 
-        # (Opcional) texto descriptivo (sin fondo)
-        label = "Escanea el c\u00F3digo"
-        cv2.putText(frame, label, (x + 4, y + h + 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        return frame
+    # ---------- Helpers ----------
+    def _put_centered(self, img, text, cy, scale=1.0, color=None, weight=2):
+        if not text:
+            return
+        color = color or self._text_color_bgr
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th), _ = cv2.getTextSize(text, font, scale, weight)
+        x = (img.shape[1] - tw) // 2
+        y = cy
+        # Sombra
+        cv2.putText(img, text, (x, y), font, scale, (0, 0, 0), weight + 2, cv2.LINE_AA)
+        cv2.putText(img, text, (x, y), font, scale, color, weight, cv2.LINE_AA)
 
     def _hex_to_bgr(self, hx):
         hx = hx.lstrip("#")
