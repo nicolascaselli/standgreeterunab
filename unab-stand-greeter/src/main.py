@@ -11,7 +11,8 @@ from pathlib import Path
 import os
 import urllib.request
 import ssl
-from PIL import ImageFont
+from PIL import ImageFont, Image, ImageDraw
+
 # --- Definir rutas base para que funcione independientemente del CWD ---
 # Ruta al directorio del script actual (src)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -29,9 +30,25 @@ import re
 
 STATE_IDLE, STATE_GREETING, STATE_WAIT_THUMBS, STATE_SHOW_QR, STATE_COOLDOWN = range(5)
 
+
+def draw_landmarks_basic(img, pose, width, height):
+    """Dibuja hombros y muñecas detectadas."""
+    # Asegura que la imagen tenga un layout de memoria compatible con OpenCV
+    img = np.ascontiguousarray(img, dtype=np.uint8)
+
+    key_color = (50, 200, 255)
+    for k in ("left_shoulder", "right_shoulder", "left_wrist", "right_wrist"):
+        x, y = pose.get(k, (None, None))
+        if x is None: continue
+        cx, cy = int(x * width), int(y * height)
+        cv2.circle(img, (cx, cy), 6, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(img, (cx, cy), 5, key_color, -1, cv2.LINE_AA)
+    # Devuelve la imagen modificada
+    return img
 def remove_emojis(text):
     # Elimina emojis y caracteres fuera del rango Unicode latino básico
     return re.sub(r'[^\w\s.,;:¡!¿?áéíóúÁÉÍÓÚñÑüÜ/-]', '', text)
+
 # ---------- Utilidades HUD / overlay ----------
 def overlay_alpha(img, overlay, x, y, alpha=0.6):
     """Pega un rectángulo BGR con alpha sobre img."""
@@ -47,9 +64,19 @@ def overlay_alpha(img, overlay, x, y, alpha=0.6):
     return img
 
 
-def draw_text(img, text, org, scale=0.6, color=(255, 255, 255), thick=1):
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+def draw_text(img, text, org, font, color=(255, 255, 255)):
+    """Dibuja texto con tildes usando Pillow sobre una imagen de OpenCV."""
+    # Convierte la imagen de OpenCV (BGR) a una imagen de Pillow (RGB)
+    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+
+    # Dibuja la sombra del texto
+    draw.text((org[0] + 1, org[1] + 1), text, font=font, fill=(0, 0, 0))
+    # Dibuja el texto principal
+    draw.text(org, text, font=font, fill=color)
+
+    # Convierte la imagen de Pillow de vuelta a formato OpenCV y la retorna
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 
 def draw_bool_dot(img, center, ok):
@@ -62,17 +89,6 @@ def draw_progress_bar(img, x, y, w, h, ratio, color=(40, 180, 60)):
     cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 0), 2, cv2.LINE_AA)
     fill = int(max(0.0, min(1.0, ratio)) * (w - 4))
     cv2.rectangle(img, (x + 2, y + 2), (x + 2 + fill, y + h - 2), color, -1, cv2.LINE_AA)
-
-
-def draw_landmarks_basic(img, pose, width, height):
-    """Dibuja hombros y muñecas detectadas."""
-    key_color = (50, 200, 255)
-    for k in ("left_shoulder", "right_shoulder", "left_wrist", "right_wrist"):
-        x, y = pose.get(k, (None, None))
-        if x is None: continue
-        cx, cy = int(x * width), int(y * height)
-        cv2.circle(img, (cx, cy), 6, (0, 0, 0), -1, cv2.LINE_AA)
-        cv2.circle(img, (cx, cy), 5, key_color, -1, cv2.LINE_AA)
 
 
 # ---------- Emoji PNG helper (ya lo tenías) ----------
@@ -222,25 +238,34 @@ def main():
 
     # --- Carga de fuente y assets ---
     emoji_font = setup_emoji_font()
+
+    # Cargar fuente principal para textos con tildes
+    font_path_abs = PROJECT_ROOT / "src/assets/fonts/Roboto-Regular.ttf"
+    main_font_panel = None
+    if font_path_abs.exists():
+        try:
+            # Usamos un tamaño más pequeño para el panel de depuración
+            main_font_panel = ImageFont.truetype(str(font_path_abs), 16)
+        except Exception as e:
+            print(f"ADVERTENCIA: No se pudo cargar la fuente principal para el panel: {e}")
+
     brand = cfg.get("brand", {})
     assets_cfg = cfg.get("assets", {})
 
-    # Construir rutas absolutas para todos los assets
     logo_path_str = assets_cfg.get("logo_path")
     logo_path_abs = PROJECT_ROOT / logo_path_str if logo_path_str else None
 
-    # Crear un diccionario de assets con rutas absolutas
     ui_assets = {
         "logo": logo_path_abs,
-        "emoji_font": emoji_font
+        "emoji_font": emoji_font,
+        "font_path": font_path_abs  # Pasar la ruta de la fuente a UIRenderer
     }
 
-    # Pasar el diccionario de assets a UIRenderer
     ui = UIRenderer(width, height,
                     brand_primary=brand.get("primary", "#A00321"),
                     text_color=brand.get("text", "#FFFFFF"),
                     assets=ui_assets,
-                    show_qr_panel=False)  # asegurarse False
+                    show_qr_panel=False)
 
     # --- Carga de textos y configuración (sin cambios) ---
     idle_text = remove_emojis(cfg.get("idle_text", "Acércate y salúdanos"))
@@ -286,8 +311,7 @@ def main():
         if key == ord(cfg["keys"].get("quit", "q")): break
         if key == ord(cfg["keys"].get("mute", "m")):
             muted = not muted;
-            tts.set_enabled(not muted if False else not muted)  # pequeña defensa
-            tts.set_enabled(not muted);
+            tts.set_enabled(not muted)
             metrics.log("mute_toggled", f"{not muted}")
         if key == ord(cfg["keys"].get("fullscreen_toggle", "f")):
             fullscreen = not fullscreen
@@ -373,7 +397,7 @@ def main():
 
         # --- HUD: landmarks + panel ---
         if DRAW_LANDMARKS:
-            draw_landmarks_basic(view, pose, width, height)
+            view = draw_landmarks_basic(view, pose, width, height)
 
         if SHOW_PANEL:
             # config del panel
@@ -398,45 +422,34 @@ def main():
             tx = x0 + 10
             ty = y0 + 10
 
-            # Título
-            draw_text(view, "Reconocimiento (en vivo)", (tx, ty + 12), scale=0.7, color=(255, 255, 255))
-
-            # Persona
-            draw_bool_dot(view, (tx + 10, ty + 40), person_present)
-            draw_text(view, f"Persona detectada: {'Si' if person_present else 'No'}", (tx + 30, ty + 46), 0.6)
-
-            # hola - izquierda
-            lratio = left_dbg["peaks"] / max(1, wave_left.min_peaks)
-            draw_bool_dot(view, (tx + 10, ty + 70), left_dbg["hand_raised"])
-            draw_text(view,
-                      f"hola (izq): picos {left_dbg['peaks']}/{wave_left.min_peaks}  x.ptp={left_dbg['x_ptp']:.3f}",
-                      (tx + 30, ty + 76), 0.55)
-            draw_progress_bar(view, tx + 30, ty + 90, int(panel_w * 0.28), 10, lratio)
-
-            # hola - derecha
-            rratio = right_dbg["peaks"] / max(1, wave_right.min_peaks)
-            draw_bool_dot(view, (tx + 10, ty + 120), right_dbg["hand_raised"])
-            draw_text(view,
-                      f"hola (der): picos {right_dbg['peaks']}/{wave_right.min_peaks}  x.ptp={right_dbg['x_ptp']:.3f}",
-                      (tx + 30, ty + 126), 0.55)
-            draw_progress_bar(view, tx + 30, ty + 140, int(panel_w * 0.28), 10, rratio)
-
-            # Pulgar arriba
-            any_thumb = False
-            if hands:
-                for hand in hands:
-                    dbg = thumbs.debug(hand)
-                    any_thumb = any_thumb or (dbg["thumb_up"] and (dbg["folded_all"] or not thumbs.require_folded))
-            draw_bool_dot(view, (tx + 10, ty + 170), any_thumb)
-            draw_text(view, f"Pulgar arriba: {'Si' if any_thumb else 'No'}", (tx + 30, ty + 176), 0.6)
-
-            # Estado + Mute
-            draw_text(view, f"Estado: {state_name}    Mute: {'ON' if muted else 'OFF'}", (tx + 10, ty + 205), 0.6,
-                      color=(220, 220, 220))
-
-            # Contadores
-            counters_text = f"Saludos: {wave_count} | Pulgares: {thumbs_up_count}"
-            draw_text(view, counters_text, (tx + 10, ty + 230), 0.6, color=(220, 220, 220))
+            if main_font_panel:
+                # Título
+                view = draw_text(view, "Reconocimiento (en vivo)", (tx, ty + 2), main_font_panel, color=(255, 255, 255))
+                # Persona
+                draw_bool_dot(view, (tx + 10, ty + 40), person_present)
+                view = draw_text(view, f"Persona detectada: {'Si' if person_present else 'No'}", (tx + 30, ty + 36), main_font_panel)
+                # hola - izquierda
+                lratio = left_dbg["peaks"] / max(1, wave_left.min_peaks)
+                draw_bool_dot(view, (tx + 10, ty + 70), left_dbg["hand_raised"])
+                view = draw_text(view, f"hola (izq): picos {left_dbg['peaks']}/{wave_left.min_peaks}  x.ptp={left_dbg['x_ptp']:.3f}", (tx + 30, ty + 66), main_font_panel)
+                draw_progress_bar(view, tx + 30, ty + 90, int(panel_w * 0.28), 10, lratio)
+                # hola - derecha
+                rratio = right_dbg["peaks"] / max(1, wave_right.min_peaks)
+                draw_bool_dot(view, (tx + 10, ty + 120), right_dbg["hand_raised"])
+                view = draw_text(view, f"hola (der): picos {right_dbg['peaks']}/{wave_right.min_peaks}  x.ptp={right_dbg['x_ptp']:.3f}", (tx + 30, ty + 116), main_font_panel)
+                draw_progress_bar(view, tx + 30, ty + 140, int(panel_w * 0.28), 10, rratio)
+                # Pulgar arriba
+                any_thumb = any(thumbs.debug(h)["thumb_up"] and (thumbs.debug(h)["folded_all"] or not thumbs.require_folded) for h in hands)
+                draw_bool_dot(view, (tx + 10, ty + 170), any_thumb)
+                view = draw_text(view, f"Pulgar arriba: {'Si' if any_thumb else 'No'}", (tx + 30, ty + 166), main_font_panel)
+                # Estado + Mute
+                view = draw_text(view, f"Estado: {state_name}    Mute: {'ON' if muted else 'OFF'}", (tx + 10, ty + 195), main_font_panel, color=(220, 220, 220))
+                # Contadores
+                counters_text = f"Saludos: {wave_count} | Pulgares: {thumbs_up_count}"
+                view = draw_text(view, counters_text, (tx + 10, ty + 220), main_font_panel, color=(220, 220, 220))
+            else:
+                # Fallback si la fuente no cargó (no mostrará tildes)
+                cv2.putText(view, "Panel no disponible: Falta fuente TTF", (tx, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Indicador mute PNG
         if muted and mute_icon is not None:

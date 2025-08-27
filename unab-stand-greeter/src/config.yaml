@@ -1,5 +1,5 @@
 camera_index: 1
-resolution: [1280, 720]
+resolution: [1920, 1080]
 fullscreen: true
 idle_text: "Acércate y salúdanos"
 prompt_wave_text: "Levanta tu mano y saluda"
@@ -41,6 +41,6 @@ debug:
   panel:
     anchor: "tl"          # opciones: tl, tc, tr, ml, cc, mr, bl, bc, br
     margin: [20, 20]      # [x, y] píxeles desde el borde según anchor
-    width_ratio: 0.36     # ancho del panel relativo al ancho de la pantalla
+    width_ratio: 0.25     # ancho del panel relativo al ancho de la pantalla
     height_ratio: 0.28    # alto del panel relativo al alto de la pantalla
     alpha: 0.65           # transparencia del panel
