@@ -6,159 +6,177 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 class UIRenderer:
-    def __init__(self, width, height, brand_primary="#A00321", text_color="#FFFFFF", assets=None,
-                 show_qr_panel=False):
+    def __init__(self, width, height, brand_primary, text_color, assets, show_qr_panel=False):
         self.width = width
         self.height = height
-        self.brand_primary = brand_primary
-        self.text_color = text_color
-        self.assets = assets or {}
+        self.brand_primary_bgr = self._hex_to_bgr(brand_primary)
+        self.text_color_rgb = tuple(reversed(self._hex_to_bgr(text_color)))
         self.show_qr_panel = show_qr_panel
-        self._qr_cache_url = None
-        self._qr_np = None
-        self._text_color_bgr = self._hex_to_bgr(self.text_color)
-        self._primary_bgr = self._hex_to_bgr(self.brand_primary)
-        self._logo = None
+        self.qr_cache = {}
 
-        # Cargar fuente TTF para texto con tildes
-        self.font_regular = None
-        self.font_bold = None
-        font_path = self.assets.get("font_path")
+        # Cargar fuentes
+        self.logo = self._load_logo(assets.get("logo"))
+        self.emoji_font = assets.get("emoji_font")
+        self.main_font = None
+        # Inicializar atributos de fuente de emojis
+        self.emoji_font_large = None
+        self.emoji_font_medium = None
+
+        font_path = assets.get("font_path")
         if font_path and font_path.exists():
             try:
-                self.font_regular = ImageFont.truetype(str(font_path), 42)
-                self.font_bold = ImageFont.truetype(str(font_path), 48)  # Usar un tamaño mayor para "negrita"
-            except IOError as e:
-                print(f"ADVERTENCIA: No se pudo cargar la fuente TTF: {e}")
+                # Tamaños de fuente para diferentes textos
+                self.font_large = ImageFont.truetype(str(font_path), 68)
+                self.font_medium = ImageFont.truetype(str(font_path), 42)
+                self.font_small = ImageFont.truetype(str(font_path), 24)
+            except Exception as e:
+                print(f"ADVERTENCIA: No se pudo cargar la fuente principal: {e}")
+                self.font_large = self.font_medium = self.font_small = None
 
-        logo_path = self.assets.get("logo")
-        if logo_path:
-            lg = cv2.imread(str(logo_path), cv2.IMREAD_UNCHANGED)
-            if lg is not None:
-                max_w = int(self.width * 0.18)
-                if lg.shape[1] > max_w:
-                    scale = max_w / lg.shape[1]
-                    lg = cv2.resize(lg, (int(lg.shape[1] * scale), int(lg.shape[0] * scale)), cv2.INTER_AREA)
-                self._logo = lg
+        # Ajustar el tamaño de la fuente de emojis para que coincida con la fuente principal
+        if self.emoji_font:
+            self.emoji_font_large = self.emoji_font.font_variant(size=58)
+            self.emoji_font_medium = self.emoji_font.font_variant(size=36)
 
-    def render_idle(self, frame, line1, line2):
-        img = frame
-        h, w = img.shape[:2]
-        cy = int(h * 0.42)
+    def _load_logo(self, logo_path):
+        if not logo_path: return None
+        logo = cv2.imread(str(logo_path), cv2.IMREAD_UNCHANGED)
+        if logo is None: return None
+        # Redimensionar logo a una altura fija, manteniendo la proporción
+        h, w = logo.shape[:2]
+        new_h = int(self.height * 0.08)
+        scale = new_h / h
+        new_w = int(w * scale)
+        return cv2.resize(logo, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Usar el nuevo método para dibujar texto
-        img = self._put_centered_pil(img, line1, (cy - 10), font=self.font_bold)
-        img = self._put_centered_pil(img, line2, (cy + 50), font=self.font_regular)
+    def _draw_text_with_emojis(self, draw, text, start_xy, font, emoji_font, fill):
+        """Dibuja texto, cambiando a la fuente de emojis cuando es necesario."""
+        if not font or not emoji_font:  # Fallback si las fuentes no cargaron
+            draw.text(start_xy, text, font=font, fill=fill)
+            return
 
-        if self._logo is not None:
-            lh, lw = self._logo.shape[:2]
-            margin = 30
-            x = w - lw - margin
-            y = margin
-            self._overlay_rgba(img, self._logo, x, y)
-        return img
+        x, y = start_xy
+        for char in text:
+            if char in emoji_font.get_variation_names():
+                # Usar la fuente de emojis y ajustar la posición verticalmente
+                draw.text((x, y - 10), char, font=emoji_font, fill=fill, embedded_color=True)
+                # Usamos getbbox en lugar del obsoleto getsize
+                bbox = emoji_font.getbbox(char)
+                x += bbox[2] - bbox[0]  # Ancho del caracter
+            else:
+                # Usar la fuente de texto normal
+                draw.text((x, y), char, font=font, fill=fill)
+                bbox = font.getbbox(char)
+                x += bbox[2] - bbox[0]
 
-    def render_greeting(self, frame, lines):
-        img = frame
-        h, _ = img.shape[:2]
-        base = int(h * 0.40)
-        for i, text in enumerate(lines[:3]):
-            font = self.font_bold if i == 0 else self.font_regular
-            img = self._put_centered_pil(img, text, base + i * 55, font=font)
-        return img
+    def _render_base(self, img, main_text, sub_text=""):
+        # 1. (Opcional) Ya no dibujamos el banner rojo. La línea está comentada/eliminada.
+        # cv2.rectangle(img, (0, 0), (self.width, int(self.height * 0.12)), self.brand_primary_bgr, -1)
 
-    def render_qr_panel(self, frame, url):
-        img = frame
-        if self._qr_cache_url != url:
-            qr = qrcode.QRCode(border=1)
+        # 2. Convertimos la imagen de la cámara a formato Pillow para dibujar el texto.
+        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+
+        # Dibujamos el texto principal con soporte para emojis.
+        # Usamos un color de texto que contraste con el fondo del video (ej. blanco con sombra negra).
+        text_color_with_alpha = self.text_color_rgb + (255,)
+        if self.font_large and self.emoji_font_large:
+            # Dibujar una sombra para mejorar la legibilidad
+            shadow_color = (0, 0, 0, 255)
+            self._draw_text_with_emojis(draw, main_text, (42, 32), self.font_large, self.emoji_font_large, shadow_color)
+            # Dibujar el texto principal
+            self._draw_text_with_emojis(draw, main_text, (40, 30), self.font_large, self.emoji_font_large, text_color_with_alpha)
+
+        # Dibujamos el subtítulo.
+        if sub_text and self.font_medium:
+            # Sombra para el subtítulo
+            draw.text((42, self.height - 78), sub_text, font=self.font_medium, fill=(0, 0, 0))
+            # Texto del subtítulo
+            draw.text((40, self.height - 80), sub_text, font=self.font_medium, fill=self.text_color_rgb)
+
+        # 3. Convertimos la imagen con texto de vuelta a formato OpenCV.
+        img_with_text = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+        # 4. Superponemos el logo AL FINAL, para que quede encima de todo.
+        if self.logo is not None:
+            # Usamos la función _overlay_rgba que ya tienes para manejar la transparencia.
+            self._overlay_rgba(img_with_text, self.logo, self.width - self.logo.shape[1] - 30, 20)
+
+        return img_with_text
+
+    def render_idle(self, img, main_text, sub_text):
+        return self._render_base(img, main_text, sub_text)
+
+    def render_greeting(self, img, lines):
+        main_text = lines[0] if lines else ""
+        sub_text = lines[1] if len(lines) > 1 else ""
+
+        # Convierte a Pillow para dibujar texto
+        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+
+        # Dibuja texto principal
+        if self.font_large:
+            draw.text((40, 30), main_text, font=self.font_large, fill=self.text_color_rgb)
+
+        # Dibuja subtítulo con soporte para emojis
+        if sub_text and self.font_medium and self.emoji_font_medium:
+            self._draw_text_with_emojis(draw, sub_text, (40, self.height - 80), self.font_medium,
+                                        self.emoji_font_medium, self.text_color_rgb)
+
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    def render_qr_panel(self, img, url):
+        # ... (El resto de la clase no necesita cambios)
+        if url not in self.qr_cache:
+            qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
             qr.add_data(url)
             qr.make(fit=True)
-            qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-            self._qr_np = np.array(qr_img)[:, :, ::-1]
-            self._qr_cache_url = url
+            qr_img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
+            self.qr_cache[url] = cv2.cvtColor(np.array(qr_img), cv2.COLOR_RGB2BGR)
 
-        qr_bgr = self._qr_np.copy()
-        max_side = int(self.height * 0.42)
-        hq, wq = qr_bgr.shape[:2]
-        scale = min(max_side / max(hq, wq), 1.0)
-        if scale != 1.0:
-            qr_bgr = cv2.resize(qr_bgr, (int(wq * scale), int(hq * scale)), interpolation=cv2.INTER_AREA)
-            hq, wq = qr_bgr.shape[:2]
+        qr_code_img = self.qr_cache[url]
+        qr_h, qr_w = qr_code_img.shape[:2]
 
-        x = (self.width - wq) // 2
-        y = (self.height - hq) // 2
+        panel_w, panel_h = int(self.width * 0.8), int(self.height * 0.7)
+        panel_x, panel_y = (self.width - panel_w) // 2, (self.height - panel_h) // 2
 
-        if self.show_qr_panel:
-            pad = 20
-            x0, y0, x1, y1 = x - pad, y - pad, x + wq + pad, y + hq + pad
-            cv2.rectangle(img, (x0, y0), (x1, y1), (255, 255, 255), -1, cv2.LINE_AA)
-            cv2.rectangle(img, (x0, y0), (x1, y1), self._primary_bgr, 3, cv2.LINE_AA)
+        overlay = np.full((panel_h, panel_w, 3), (250, 250, 250), dtype=np.uint8)
 
-        img[y:y + hq, x:x + wq] = qr_bgr
-        img = self._put_centered_pil(img, "Escanea el código", y + hq + 40, font=self.font_regular)
-        return img
+        qr_x, qr_y = (panel_w - qr_w) // 2, (panel_h - qr_h) // 2
+        overlay[qr_y:qr_y + qr_h, qr_x:qr_x + qr_w] = qr_code_img
 
-    # ---------- Helpers ----------
-    def _pil_to_cv2(self, pil_img):
-        return np.array(pil_img)[:, :, ::-1]
+        cv2.addWeighted(overlay, 0.9, img[panel_y:panel_y + panel_h, panel_x:panel_x + panel_w], 0.1, 0,
+                        img[panel_y:panel_y + panel_h, panel_x:panel_x + panel_w])
 
-    def _cv2_to_pil(self, cv2_img):
-        return Image.fromarray(cv2_img[:, :, ::-1])
+        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
 
-    def _put_centered_pil(self, img_cv2, text, cy, font, color=None):
-        if not text or not font:
-            # Si no hay fuente, recurrir al método antiguo (sin tildes)
-            return self._put_centered_cv2(img_cv2, text, cy)
+        title_text = "¡Conoce más sobre la carrera!"
+        bbox = self.font_medium.getbbox(title_text)
+        text_w = bbox[2] - bbox[0]
+        draw.text(((self.width - text_w) // 2, panel_y + 30), title_text, font=self.font_medium, fill=(0, 0, 0))
 
-        color = color or self._text_color_bgr
-        pil_color = (color[2], color[1], color[0])  # BGR a RGB
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-        img_pil = self._cv2_to_pil(img_cv2)
-        draw = ImageDraw.Draw(img_pil)
+    def _overlay_rgba(self, bg, fg, x, y):
+        if fg is None: return
+        h, w = fg.shape[:2]
 
-        text_bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
-        x = (self.width - tw) // 2
-        y = cy - th // 2
+        # Asegurarse de que la imagen de fondo tenga 3 canales (BGR)
+        if bg.shape[2] == 4:
+            bg = bg[:, :, :3]
 
-        # Sombra
-        draw.text((x + 2, y + 2), text, font=font, fill=(0, 0, 0))
-        # Texto
-        draw.text((x, y), text, font=font, fill=pil_color)
+        # Asegurarse de que la imagen superpuesta tenga 4 canales (BGRA)
+        if fg.shape[2] == 3:
+            # Si no tiene canal alfa, no se puede hacer la superposición transparente
+            return
 
-        return self._pil_to_cv2(img_pil)
+        alpha = fg[:, :, 3] / 255.0
+        bg_roi = bg[y:y+h, x:x+w]
 
-    def _put_centered_cv2(self, img, text, cy, scale=1.0, color=None, weight=2):
-        """Fallback a cv2.putText si la fuente TTF no está disponible."""
-        if not text: return img
-        color = color or self._text_color_bgr
-        font_face = cv2.FONT_HERSHEY_SIMPLEX
-        (tw, th), _ = cv2.getTextSize(text, font_face, scale, weight)
-        x = (img.shape[1] - tw) // 2
-        cv2.putText(img, text, (x, cy), font_face, scale, (0, 0, 0), weight + 2, cv2.LINE_AA)
-        cv2.putText(img, text, (x, cy), font_face, scale, color, weight, cv2.LINE_AA)
-        return img
-
-    def _overlay_rgba(self, bg_bgr, fg_bgra, x, y):
-        # (Sin cambios, este método ya funciona bien)
-        if fg_bgra is None: return bg_bgr
-        H, W = bg_bgr.shape[:2];
-        h, w = fg_bgra.shape[:2]
-        if x >= W or y >= H: return bg_bgr
-        x2, y2 = min(x + w, W), min(y + h, H)
-        x0_fg, y0_fg = max(0, -x), max(0, -y)
-        x0_bg, y0_bg = max(0, x), max(0, y)
-        w_eff, h_eff = x2 - x0_bg, y2 - y0_bg
-        if w_eff <= 0 or h_eff <= 0: return bg_bgr
-        fg_crop = fg_bgra[y0_fg:y0_fg + h_eff, x0_fg:x0_fg + w_eff]
-        bg_roi = bg_bgr[y0_bg:y0_bg + h_eff, x0_bg:x0_bg + w_eff]
-        if fg_crop.shape[2] == 4:
-            alpha = fg_crop[:, :, 3:4] / 255.0
-            blended = ((1 - alpha) * bg_roi + alpha * fg_crop[:, :, :3]).astype(bg_roi.dtype)
-            bg_bgr[y0_bg:y0_bg + h_eff, x0_bg:x0_bg + w_eff] = blended
-        else:
-            bg_bgr[y0_bg:y0_bg + h_eff, x0_bg:x0_bg + w_eff] = fg_crop[:, :, :3]
-        return bg_bgr
+        for c in range(0, 3):
+            bg_roi[:, :, c] = (alpha * fg[:, :, c] + (1 - alpha) * bg_roi[:, :, c])
 
     def _hex_to_bgr(self, hx):
         hx = hx.lstrip("#")

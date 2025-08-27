@@ -267,10 +267,13 @@ def main():
                     assets=ui_assets,
                     show_qr_panel=False)
 
-    # --- Carga de textos y configuración (sin cambios) ---
+    # --- Carga de textos y configuración ---
+    # Mantenemos la eliminación de emojis para textos donde no los queremos explícitamente
     idle_text = remove_emojis(cfg.get("idle_text", "Acércate y salúdanos"))
-    prompt_wave_text = remove_emojis(cfg.get("prompt_wave_text", "Levanta tu mano y saluda"))
     greeting_lines = [remove_emojis(line) for line in cfg.get("greeting_texts", ["¡Hola!", "Bienvenido/a a UNAB"])]
+
+    # Añadimos el emoji al texto de saludo (ya no usamos remove_emojis aquí)
+    prompt_wave_text = cfg.get("prompt_wave_text", "Levanta tu mano y saluda 👋")
 
     qr_url = (cfg.get("qr", {}) or {}).get("url", "https://www.unab.cl/carreras/mallas/ing_civil_informatica.pdf")
     wave_cd = cfg.get("cooldowns", {}).get("wave_seconds", 6)
@@ -360,8 +363,7 @@ def main():
                 metrics.log("state", "WAIT_THUMBS")
 
         elif state == STATE_WAIT_THUMBS:
-            view = ui.render_greeting(view, [greeting_lines[0], "Muéstranos Pulgar arriba para ver más"])  # Emoji quitado
-
+            view = ui.render_greeting(view, [greeting_lines[0], "Muéstranos Pulgar arriba 👍 para ver más"])
             thumbs_up = False
             thumbs_dbg_list = []
             for hand in hands:
