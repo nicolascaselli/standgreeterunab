@@ -12,7 +12,6 @@ import os
 import urllib.request
 import ssl
 from PIL import ImageFont, Image, ImageDraw
-import emoji
 import platform
 
 # --- Definir rutas base para que funcione independientemente del CWD ---
@@ -319,16 +318,6 @@ def main():
     print(f"  - greeting_lines[0]: '{greeting_lines[0]}'")
     print(f"  - prompt_wave_text: '{prompt_wave_text}'")
 
-    # Verificar detección de emojis en greeting_lines[0]
-    for i, char in enumerate(greeting_lines[0]):
-        if emoji.is_emoji(char):
-            print(f"    Emoji detectado en greeting_lines[0] pos {i}: '{char}' (U+{ord(char):04X})")
-
-    # Verificar detección de emojis en prompt_wave_text
-    for i, char in enumerate(prompt_wave_text):
-        if emoji.is_emoji(char):
-            print(f"    Emoji detectado en prompt_wave_text pos {i}: '{char}' (U+{ord(char):04X})")
-
     qr_url = (cfg.get("qr", {}) or {}).get("url", "https://www.unab.cl/carreras/mallas/ing_civil_informatica.pdf")
     wave_cd = cfg.get("cooldowns", {}).get("wave_seconds", 6)
     thumbs_cd = cfg.get("cooldowns", {}).get("thumbs_seconds", 6)
@@ -341,8 +330,32 @@ def main():
 
     win = "UNAB Greeter"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+
+    win_cfg = (cfg.get("window") or {})
     if fullscreen:
         cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    else:
+        # aplica tamaño y posición si vienen en config
+        w, h = win_cfg.get("size", [width, height])
+        cv2.resizeWindow(win, int(w), int(h))
+        x, y = win_cfg.get("position", [50, 50])
+        try:
+            cv2.moveWindow(win, int(x), int(y))
+        except Exception:
+            pass
+
+        # (Opcional) siempre encima en Windows
+        if win_cfg.get("always_on_top", False):
+            try:
+                import platform
+                if platform.system() == "Windows":
+                    import win32gui, win32con
+                    hwnd = win32gui.FindWindow(None, win)  # por título
+                    win32gui.SetWindowPos(
+                        hwnd, win32con.HWND_TOPMOST, int(x), int(y), int(w), int(h), 0
+                    )
+            except Exception as e:
+                print("No pude poner la ventana 'always on top':", e)
 
     state = STATE_IDLE
     last_trigger_t = 0
@@ -372,8 +385,31 @@ def main():
             metrics.log("mute_toggled", f"{not muted}")
         if key == ord(cfg["keys"].get("fullscreen_toggle", "f")):
             fullscreen = not fullscreen
-            cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN,
-                                  cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
+            cv2.setWindowProperty(
+                win,
+                cv2.WND_PROP_FULLSCREEN,
+                cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL
+            )
+            # Reaplicar tamaño/posición al volver a ventana
+            if not fullscreen:
+                w, h = win_cfg.get("size", [width, height])
+                cv2.resizeWindow(win, int(w), int(h))
+                x, y = win_cfg.get("position", [50, 50])
+                try:
+                    cv2.moveWindow(win, int(x), int(y))
+                except Exception:
+                    pass
+                if win_cfg.get("always_on_top", False):
+                    try:
+                        if platform.system() == "Windows":
+                            import win32gui, win32con
+                            hwnd = win32gui.FindWindow(None, win)
+                            win32gui.SetWindowPos(
+                                hwnd, win32con.HWND_TOPMOST, int(x), int(y), int(w), int(h), 0
+                            )
+                    except Exception as e:
+                        print("No pude poner la ventana 'always on top':", e)
+
         if key == ord(cfg["keys"].get("reset", "r")):
             state = STATE_IDLE;
             metrics.log("state_reset")
@@ -419,9 +455,6 @@ def main():
         elif state == STATE_WAIT_THUMBS:
             thumbs_text = "Muéstranos Pulgar arriba 👍 para ver más"
             print(f"DEBUG: thumbs_text: '{thumbs_text}'")
-            for i, char in enumerate(thumbs_text):
-                if emoji.is_emoji(char):
-                    print(f"    Emoji en thumbs_text pos {i}: '{char}' (U+{ord(char):04X})")
             view = ui.render_greeting(view, [greeting_lines[0], thumbs_text])
             thumbs_up = False
             thumbs_dbg_list = []

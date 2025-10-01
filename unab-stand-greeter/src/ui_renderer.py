@@ -3,7 +3,7 @@ import cv2
 import qrcode
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-import emoji
+
 import platform
 
 
@@ -164,47 +164,47 @@ class UIRenderer:
 
         x, y = start_xy
 
-        for i, char in enumerate(text):
-            if emoji.is_emoji(char) and emoji_font:
-                # Dibujar emoji con configuraciones específicas por SO
-                try:
-                    if self.system == "Windows":
-                        # En Windows, a veces necesitamos ajustar la posición Y
-                        emoji_y = y - 5
-                    else:
-                        emoji_y = y
-
-                    draw.text((x, emoji_y), char, font=emoji_font, embedded_color=True)
-
-                    # Obtener ancho del emoji
-                    try:
-                        bbox = emoji_font.getbbox(char)
-                        char_width = bbox[2] - bbox[0]
-                    except:
-                        # Fallback si getbbox falla
-                        char_width = emoji_font.getlength(char) if hasattr(emoji_font, 'getlength') else 30
-
-                    x += max(char_width, 20)  # Mínimo 20px de ancho
-
-                except Exception as e:
-                    print(f"ERROR: Error dibujando emoji '{char}' en {self.system}: {e}")
-                    # Fallback: mostrar texto alternativo
-                    if font:
-                        fallback_text = "[emoji]"
-                        draw.text((x, y), fallback_text, font=font, fill=fill)
-                        x += font.getlength(fallback_text) if hasattr(font, 'getlength') else 50
-                    else:
-                        x += 30
-            else:
-                # Dibujar carácter normal
-                if font:
-                    draw.text((x, y), char, font=font, fill=fill)
-                    try:
-                        bbox = font.getbbox(char)
-                        char_width = bbox[2] - bbox[0]
-                    except:
-                        char_width = font.getlength(char) if hasattr(font, 'getlength') else 10
-                    x += char_width
+        # for i, char in enumerate(text):
+        #     if emoji.is_emoji(char) and emoji_font:
+        #         # Dibujar emoji con configuraciones específicas por SO
+        #         try:
+        #             if self.system == "Windows":
+        #                 # En Windows, a veces necesitamos ajustar la posición Y
+        #                 emoji_y = y - 5
+        #             else:
+        #                 emoji_y = y
+        #
+        #             draw.text((x, emoji_y), char, font=emoji_font, embedded_color=True)
+        #
+        #             # Obtener ancho del emoji
+        #             try:
+        #                 bbox = emoji_font.getbbox(char)
+        #                 char_width = bbox[2] - bbox[0]
+        #             except:
+        #                 # Fallback si getbbox falla
+        #                 char_width = emoji_font.getlength(char) if hasattr(emoji_font, 'getlength') else 30
+        #
+        #             x += max(char_width, 20)  # Mínimo 20px de ancho
+        #
+        #         except Exception as e:
+        #             print(f"ERROR: Error dibujando emoji '{char}' en {self.system}: {e}")
+        #             # Fallback: mostrar texto alternativo
+        #             if font:
+        #                 fallback_text = "[emoji]"
+        #                 draw.text((x, y), fallback_text, font=font, fill=fill)
+        #                 x += font.getlength(fallback_text) if hasattr(font, 'getlength') else 50
+        #             else:
+        #                 x += 30
+        #     else:
+        #         # Dibujar carácter normal
+        #         if font:
+        #             draw.text((x, y), char, font=font, fill=fill)
+        #             try:
+        #                 bbox = font.getbbox(char)
+        #                 char_width = bbox[2] - bbox[0]
+        #             except:
+        #                 char_width = font.getlength(char) if hasattr(font, 'getlength') else 10
+        #             x += char_width
 
     def _render_base(self, img, *lines):
         """Renderiza las líneas de texto base con soporte para emojis."""

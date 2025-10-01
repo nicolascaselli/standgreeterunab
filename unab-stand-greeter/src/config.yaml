@@ -1,6 +1,9 @@
-camera_index: 1
-resolution: [1920, 1080]
-fullscreen: true
+camera_index: 2
+#resolution: [1920, 1080]
+resolution: [1024, 768]
+fullscreen: false
+position: [80, 60]  # x, y desde la esquina superior izquierda
+always_on_top: false  # true = siempre visible sobre otras ventanas (Windows)
 idle_text: "Acércate y salúdanos"
 prompt_wave_text: "Levanta tu mano y saluda 👋"
 greeting_texts:
