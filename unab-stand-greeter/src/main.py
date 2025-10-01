@@ -11,6 +11,7 @@ import cv2, time, yaml, numpy as np
 from pathlib import Path
 import urllib.request, ssl, platform
 from PIL import ImageFont, Image, ImageDraw
+from maze import MazeGame
 
 # --- Paths base ---
 SCRIPT_DIR = Path(__file__).resolve().parent      # src
@@ -26,7 +27,7 @@ from metrics import Metrics
 # ---------------- Estados ----------------
 STATE_IDLE, STATE_GREETING, STATE_WAIT_THUMBS, STATE_SHOW_QR, STATE_COOLDOWN = range(5)
 STATE_ASK_GAME = 5   # QR o Juego
-STATE_GAME     = 6   # (placeholder por ahora)
+STATE_GAME     = 6   # Juego del laberinto
 
 # ---------------- Landmarks mano (MediaPipe) ----------------
 WRIST = 0
@@ -48,6 +49,15 @@ except Exception:
         (13,17),(17,18),(18,19),(19,20),# meñique
         (0,17)                        # muñeca a meñique base
     ]
+
+def get_index_tip_px(hands, width, height):
+    """Devuelve (x_px, y_px) del dedo índice de la PRIMERA mano válida; o None."""
+    INDEX_TIP = 8
+    for h in hands:
+        if INDEX_TIP in h:
+            x, y = h[INDEX_TIP]
+            return int(x * width), int(y * height)
+    return None
 
 # ---------------- Utilidades de mano ----------------
 def is_hand_open(hand_landmarks: dict, margin: float = 0.01, min_extended: int = 3) -> bool:
@@ -75,17 +85,14 @@ def _hand_to_indexed_dict(hand):
     """
     if hand is None:
         return None
-    # dict con ints
     if isinstance(hand, dict) and all(isinstance(k, int) for k in hand.keys()):
         return hand
-    # lista/tupla de 21 puntos
     if isinstance(hand, (list, tuple)) and len(hand) == 21:
         try:
             d = {i: (float(pt[0]), float(pt[1])) for i, pt in enumerate(hand)}
             return d
         except Exception:
             pass
-    # objeto mediapipe con .landmark (21)
     lm = getattr(hand, "landmark", None)
     if lm is not None and len(lm) == 21:
         try:
@@ -122,14 +129,12 @@ def draw_hands_landmarks(img, hands, width, height, color_pts=(0,255,255), color
     if not hands:
         return img
     for hand in hands:
-        # conexiones
         for a, b in HAND_CONNS:
             if a in hand and b in hand:
                 ax, ay = hand[a]; bx, by = hand[b]
                 ax, ay = int(ax*width), int(ay*height)
                 bx, by = int(bx*width), int(by*height)
                 cv2.line(img, (ax, ay), (bx, by), color_conn, 2, cv2.LINE_AA)
-        # puntos
         for i, (x, y) in hand.items():
             cx, cy = int(x*width), int(y*height)
             r = 4 if i != INDEX_TIP else 6
@@ -271,16 +276,29 @@ def main():
         cfg = yaml.safe_load(f)
 
     cam_index = cfg.get("camera_index", 0)
-    width, height = cfg.get("resolution", [1280, 720])
-    fullscreen = cfg.get("fullscreen", True)
+
+    # --- resoluciones y mínimos (canvas UI grande tipo TV) ---
+    target_w, target_h = cfg.get("resolution", [1600, 900])              # por defecto grande
+    min_w, min_h = (cfg.get("min_resolution") or [1280, 720])            # mínimo de seguridad
+    width  = max(int(target_w), int(min_w))
+    height = max(int(target_h), int(min_h))
+
+    # pedir mínimo a la cámara (si driver lo respeta)
+    camera_cfg = (cfg.get("camera") or {})
+    cam_min = camera_cfg.get("min_resolution", [min_w, min_h])
+    cam_req_w, cam_req_h = int(cam_min[0]), int(cam_min[1])
+    # espejo: hace más natural el control con la mano frente a la TV
+    mirror_preview = bool(camera_cfg.get("mirror", True))
+
+    fullscreen = cfg.get("fullscreen", False)  # por defecto NO fullscreen
     debug_cfg = cfg.get("debug", {}) or {}
     SHOW_PANEL = bool(debug_cfg.get("show_panel", True))
     DRAW_LANDMARKS = bool(debug_cfg.get("draw_landmarks", True))
 
     # Captura
     cap = cv2.VideoCapture(cam_index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  cam_req_w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_req_h)
 
     # Detectores
     det = Detector()
@@ -337,7 +355,7 @@ def main():
     thumb_icon = _resize(_read_rgba(PROJECT_ROOT / "src/assets/emoji/thumbs_up.png"), height=icon_big_h)
     mute_icon  = _resize(_read_rgba(PROJECT_ROOT / "src/assets/emoji/mute.png"),      height=icon_small_h)
 
-    # Ventana
+    # Ventana (grande, no fullscreen)
     win = "UNAB Greeter"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     win_cfg = (cfg.get("window") or {})
@@ -368,16 +386,25 @@ def main():
     greet_tts   = "Hola! Bienvenido a Ingeniería Civil Informática de la UNAB. Si quieres saber más, muéstranos pulgar arriba."
     qr_tts      = "Perfecto. Escanea el código QR para conocer la carrera y sus proyectos."
     ask_game_tts= "¿Quieres ver información o jugar al laberinto? Pulgar arriba para el QR, mano abierta para jugar."
+    maze_game = None
 
     while True:
         ok, frame = cap.read()
-        if not ok:
+        if not ok or frame is None:
             frame = np.zeros((height, width, 3), dtype=np.uint8)
+        else:
+            # Normaliza el frame al canvas fijo (width x height)
+            fh, fw = frame.shape[:2]
+            if (fw != width) or (fh != height):
+                interp = cv2.INTER_CUBIC if (width*height) > (fw*fh) else cv2.INTER_AREA
+                frame = cv2.resize(frame, (width, height), interpolation=interp)
+            # ---- espejo para control natural frente a la TV ----
+            if mirror_preview:
+                frame = cv2.flip(frame, 1)
 
         out = det.process(frame)
         pose  = out.get("pose", {})
         hands_raw = out.get("hands", [])
-        # *** Normaliza manos a dict {0..20:(x,y)} ***
         hands = normalize_hands(hands_raw)
 
         now = time.time()
@@ -408,8 +435,12 @@ def main():
                         print("No pude poner la ventana 'always on top':", e)
         if key == ord(cfg["keys"].get("reset", "r")):
             state = STATE_IDLE; metrics.log("state_reset")
+        if key == ord('g'): # salir del juego manualmente
+            maze_game = None
+            state = STATE_COOLDOWN
+            last_trigger_t = now
 
-        # Render base
+        # Render base (ya espejo si aplica)
         view = frame.copy()
 
         # Pose básica
@@ -488,16 +519,42 @@ def main():
                 state = STATE_COOLDOWN; last_trigger_t = now; metrics.log("qr_shown")
 
         elif state == STATE_GAME:
-            # Placeholder del juego (implementaremos laberinto en el siguiente paso)
-            panel = np.full((int(height*0.5), int(width*0.7), 3), (10, 10, 10), dtype=np.uint8)
-            x0 = (width - panel.shape[1]) // 2
-            y0 = (height - panel.shape[0]) // 2
-            view = overlay_alpha(view, panel, x0, y0, alpha=0.7)
-            if main_font_panel:
-                view = draw_text(view, "Laberinto (próximo paso)", (x0+20, y0+40), main_font_panel, (255,255,255))
-                view = draw_text(view, "Usa tu dedo (índice) para recorrer sin tocar bordes.", (x0+20, y0+70), main_font_panel, (220,220,220))
-            if elapsed > 4.0:
-                state = STATE_COOLDOWN; last_trigger_t = now; metrics.log("game_placeholder_end")
+            # Inicializar el laberinto al entrar al estado con el tamaño real del VIEW (ya espejo)
+            if maze_game is None:
+                fh, fw = view.shape[:2]  # alto, ancho del frame actual
+                maze_cfg = (cfg.get("maze") or {})
+                maze_game = MazeGame(
+                    fw, fh,
+                    grid_cols=maze_cfg.get("grid_cols", 11),  # menos celdas => pasillos anchos
+                    grid_rows=maze_cfg.get("grid_rows", 7),
+                    panel_ratio_w=maze_cfg.get("panel_ratio_w", 0.72),
+                    panel_ratio_h=maze_cfg.get("panel_ratio_h", 0.58),
+                    thin_ratio=maze_cfg.get("thin_ratio", 0.25),
+                    collision_rel=maze_cfg.get("collision_rel", 0.006),  # más permisivo
+                    start_goal_pad=maze_cfg.get("start_goal_pad", 0.30),  # inicio/meta más grandes
+                    trail_thickness_rel=maze_cfg.get("trail_thickness_rel", 0.022),
+                )
+
+            # Obtener dedo índice en píxeles
+            finger_px = get_index_tip_px(hands, width, height)
+
+            # Actualizar juego
+            status = maze_game.update(finger_px, now)
+
+            # Renderizar en el frame
+            view = maze_game.render(view, main_font_panel)
+
+            # Reacciones
+            if status.life_lost:
+                metrics.log("maze_life_lost")
+            if status.win:
+                metrics.log("maze_win")
+                if not muted: tts.speak_async("¡Ganaste el laberinto!")
+                state = STATE_COOLDOWN; last_trigger_t = now; maze_game = None
+            if status.game_over:
+                metrics.log("maze_game_over")
+                if not muted: tts.speak_async("¡Game Over! Gracias por jugar.")
+                state = STATE_COOLDOWN; last_trigger_t = now; maze_game = None
 
         elif state == STATE_COOLDOWN:
             view = ui.render_idle(view, "¡Gracias! ✨", "Acércate y salúdanos")
@@ -515,7 +572,7 @@ def main():
             anchor = pconf.get("anchor", "bl")
             margin = pconf.get("margin", [20, 20])
             panel_w = int(width * float(pconf.get("width_ratio", 0.36)))
-            panel_h = int(height * float(pconf.get("height_ratio", 0.34)))  # un poco más alto
+            panel_h = int(height * float(pconf.get("height_ratio", 0.34)))
             alpha = float(pconf.get("alpha", 0.65))
 
             left_dbg  = wave_left.get_debug()
@@ -532,12 +589,9 @@ def main():
 
             if main_font_panel:
                 view = draw_text(view, "Reconocimiento (en vivo)", (tx, ty+2), main_font_panel, (255,255,255))
-                # Conteo manos
                 view = draw_text(view, f"Manos detectadas: {len(hands)}", (tx, ty+26), main_font_panel, (220,220,220))
-                # Persona
                 draw_bool_dot(view, (tx + 10, ty + 54), person_present)
                 view = draw_text(view, f"Persona detectada: {'Si' if person_present else 'No'}", (tx + 30, ty + 50), main_font_panel)
-                # Hola izq/der
                 lratio = left_dbg["peaks"] / max(1, wave_left.min_peaks)
                 draw_bool_dot(view, (tx + 10, ty + 84), left_dbg["hand_raised"])
                 view = draw_text(view, f"hola (izq): picos {left_dbg['peaks']}/{wave_left.min_peaks}  x.ptp={left_dbg['x_ptp']:.3f}", (tx + 30, ty + 80), main_font_panel)
@@ -546,14 +600,12 @@ def main():
                 draw_bool_dot(view, (tx + 10, ty + 134), right_dbg["hand_raised"])
                 view = draw_text(view, f"hola (der): picos {right_dbg['peaks']}/{wave_right.min_peaks}  x.ptp={right_dbg['x_ptp']:.3f}", (tx + 30, ty + 130), main_font_panel)
                 draw_progress_bar(view, tx + 30, ty + 154, int(panel_w * 0.28), 10, rratio)
-                # Señales
                 any_thumb = any(thumbs.debug(h)["thumb_up"] and (thumbs.debug(h)["folded_all"] or not thumbs.require_folded) for h in hands)
                 any_open  = any(is_hand_open(h) for h in hands)
                 draw_bool_dot(view, (tx + 10, ty + 184), any_thumb)
                 view = draw_text(view, f"Pulgar arriba: {'Si' if any_thumb else 'No'}", (tx + 30, ty + 180), main_font_panel)
                 draw_bool_dot(view, (tx + 10, ty + 214), any_open)
                 view = draw_text(view, f"Mano abierta (jugar): {'Si' if any_open else 'No'}", (tx + 30, ty + 210), main_font_panel)
-                # Estado/Mute
                 view = draw_text(view, f"Estado: {state_name}    Mute: {'ON' if muted else 'OFF'}", (tx + 10, ty + 238), main_font_panel, (220,220,220))
             else:
                 cv2.putText(view, "Panel no disponible: Falta fuente TTF", (tx, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
