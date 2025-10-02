@@ -39,6 +39,7 @@ brand:
   text: "#FFFFFF"
 assets:
   logo_path: "src/assets/logo_unab.png"
+  logo_height_ratio: 0.20   # 20% de la altura de la ventana (ajústalo a gusto: 0.18–0.26)
 metrics:
   csv_path: "metrics.csv"
 keys:
@@ -64,4 +65,8 @@ maze:
   collision_rel: 0.006
   start_goal_pad: 0.30
   trail_thickness_rel: 0.022
+interaction:
+  v_sign_hold_seconds: 0.8   # mantener ✌ este tiempo para jugar
+  thumb_hold_seconds: 0.3    # mantener 👍 un instante para QR (evita falsos positivos)
+  show_countdown: true
 

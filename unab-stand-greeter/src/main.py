@@ -23,6 +23,7 @@ from thumbs_gesture import ThumbsUpDetector
 from ui_renderer import UIRenderer
 from tts import TTS
 from metrics import Metrics
+import re
 
 # ---------------- Estados ----------------
 STATE_IDLE, STATE_GREETING, STATE_WAIT_THUMBS, STATE_SHOW_QR, STATE_COOLDOWN = range(5)
@@ -74,6 +75,41 @@ def is_hand_open(hand_landmarks: dict, margin: float = 0.01, min_extended: int =
             if tipy < (pipy - margin):
                 count += 1
     return count >= min_extended
+def is_v_sign(hand_landmarks: dict, margin: float = 0.015, sep_min: float = 0.04) -> bool:
+    """
+    ✌ (victory): índice y medio extendidos; anular y meñique no extendidos.
+    Opcional: separación horizontal entre tips de índice y medio para evitar confusión.
+    Coords normalizadas mediapipe (y menor = más arriba).
+    """
+    if not hand_landmarks:
+        return False
+    # índices de landmarks
+    INDEX_PIP, INDEX_TIP   = 6, 8
+    MIDDLE_PIP, MIDDLE_TIP = 10, 12
+    RING_PIP, RING_TIP     = 14, 16
+    PINKY_PIP, PINKY_TIP   = 18, 20
+
+    needed = [INDEX_TIP, INDEX_PIP, MIDDLE_TIP, MIDDLE_PIP, RING_TIP, RING_PIP, PINKY_TIP, PINKY_PIP]
+    if not all(k in hand_landmarks for k in needed):
+        return False
+
+    _, ity = hand_landmarks[INDEX_TIP];  _, ipy = hand_landmarks[INDEX_PIP]
+    _, mty = hand_landmarks[MIDDLE_TIP]; _, mpy = hand_landmarks[MIDDLE_PIP]
+    _, rty = hand_landmarks[RING_TIP];   _, rpy = hand_landmarks[RING_PIP]
+    _, pty = hand_landmarks[PINKY_TIP];  _, ppy = hand_landmarks[PINKY_PIP]
+
+    index_ext  = ity < (ipy - margin)
+    middle_ext = mty < (mpy - margin)
+    ring_fold  = rty > (rpy - margin)
+    pinky_fold = pty > (ppy - margin)
+
+    if not (index_ext and middle_ext and ring_fold and pinky_fold):
+        return False
+
+    # separación horizontal entre índice y medio para formar la "V"
+    ix, _ = hand_landmarks[INDEX_TIP]
+    mx, _ = hand_landmarks[MIDDLE_TIP]
+    return abs(ix - mx) >= sep_min
 
 def _hand_to_indexed_dict(hand):
     """
@@ -161,7 +197,55 @@ def draw_text(img, text, org, font, color=(255, 255, 255)):
     draw.text((org[0] + 1, org[1] + 1), text, font=font, fill=(0, 0, 0))
     draw.text(org, text, font=font, fill=color)
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+# --- Soporte simple de emojis (✌, 👍, 👋) en HUD ---
+EMOJI_TOKEN_RE = re.compile(
+    r"("                                   # token completo
+    r"\u270C[\U0001F3FB-\U0001F3FF]?|"     # ✌ + tono opcional
+    r"\U0001F44D[\U0001F3FB-\U0001F3FF]?|" # 👍 + tono opcional
+    r"\U0001F44B[\U0001F3FB-\U0001F3FF]?"  # 👋 + tono opcional
+    r")"
+)
 
+def draw_text_mix(img, text, org, font, emoji_font=None, color=(255,255,255)):
+    """Dibuja 'text' mezclando font (texto) y emoji_font (emojis) para el HUD."""
+    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+
+    x, y = org
+    i = 0
+    while i < len(text):
+        m = EMOJI_TOKEN_RE.match(text, i)
+        if m and emoji_font is not None:
+            token = m.group(0)
+            try:
+                # pequeño ajuste vertical (Windows suele dibujar un pelín más abajo)
+                draw.text((x, y - 2), token, font=emoji_font)
+                try:
+                    bbox = emoji_font.getbbox(token)
+                    adv = bbox[2] - bbox[0]
+                except Exception:
+                    adv = int(emoji_font.getlength(token)) if hasattr(emoji_font, "getlength") else 28
+                x += max(adv, 18)
+            except Exception:
+                # fallback si falla emoji_font
+                draw.text((x, y), token, font=font, fill=color)
+                x += 14
+            i += len(token)
+        else:
+            ch = text[i]
+            try:
+                draw.text((x, y), ch, font=font, fill=color)
+                try:
+                    bbox = font.getbbox(ch)
+                    adv = bbox[2] - bbox[0]
+                except Exception:
+                    adv = int(font.getlength(ch)) if hasattr(font, "getlength") else 10
+                x += max(adv, 6)
+            except Exception:
+                x += 8
+            i += 1
+
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 def draw_bool_dot(img, center, ok):
     color = (40, 180, 60) if ok else (40, 40, 200)
     cv2.circle(img, center, 7, (0, 0, 0), -1, cv2.LINE_AA)
@@ -295,6 +379,19 @@ def main():
     SHOW_PANEL = bool(debug_cfg.get("show_panel", True))
     DRAW_LANDMARKS = bool(debug_cfg.get("draw_landmarks", True))
 
+    # --- Interacción: doble pulgar mantenido para juego ---
+    interaction_cfg = (cfg.get("interaction") or {})
+    V_HOLD = float(interaction_cfg.get("v_sign_hold_seconds", 0.8))
+    QR_HOLD = float(interaction_cfg.get("thumb_hold_seconds", 0.3))
+    SHOW_COUNTDOWN = bool(interaction_cfg.get("show_countdown", True))
+
+    # timers internos
+    v_hold_t0 = None
+    qr_hold_t0 = None
+
+    # estado interno del “hold”
+    game_hold_t0 = None  # instante en que vimos por primera vez 2 pulgares
+
     # Captura
     cap = cv2.VideoCapture(cam_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  cam_req_w)
@@ -323,6 +420,14 @@ def main():
 
     # Fuentes/Assets
     emoji_font_path = setup_emoji_font()
+    emoji_font_panel = None
+    if emoji_font_path and Path(emoji_font_path).exists():
+        try:
+            # Tamaño pensado para el panel (ajusta a gusto: 18–22)
+            emoji_font_panel = ImageFont.truetype(str(emoji_font_path), 20)
+        except Exception as e:
+            print(f"ADVERTENCIA: No se pudo cargar emoji_font_panel: {e}")
+
     font_path_abs = PROJECT_ROOT / "src/assets/fonts/Roboto-Regular.ttf"
     main_font_panel = None
     if font_path_abs.exists():
@@ -335,11 +440,14 @@ def main():
     logo_path_abs = PROJECT_ROOT / logo_path_str if logo_path_str else None
 
     ui_assets = {"logo": logo_path_abs, "emoji_font_path": emoji_font_path, "font_path": font_path_abs}
+    logo_h_ratio = (cfg.get("assets") or {}).get("logo_height_ratio", 0.20)
+
     ui = UIRenderer(width, height,
                     brand_primary=brand.get("primary", "#A00321"),
                     text_color=brand.get("text", "#FFFFFF"),
                     assets=ui_assets,
-                    show_qr_panel=False)
+                    show_qr_panel=False,
+                    logo_height_ratio=float(logo_h_ratio))
 
     # Textos
     idle_text = cfg.get("idle_text", "Acércate y salúdanos")
@@ -385,7 +493,10 @@ def main():
 
     greet_tts   = "Hola! Bienvenido a Ingeniería Civil Informática de la UNAB. Si quieres saber más, muéstranos pulgar arriba."
     qr_tts      = "Perfecto. Escanea el código QR para conocer la carrera y sus proyectos."
-    ask_game_tts= "¿Quieres ver información o jugar al laberinto? Pulgar arriba para el QR, mano abierta para jugar."
+    ask_game_tts = (
+        "¿Qué quieres hacer? Muestra un pulgar arriba para ver el QR, "
+        "o dos pulgares arriba al mismo tiempo para jugar al laberinto."
+    )
     maze_game = None
 
     while True:
@@ -478,29 +589,84 @@ def main():
                 last_trigger_t = now
                 metrics.log("state", "ASK_GAME")
                 if not muted: tts.speak_async(ask_game_tts)
-
         elif state == STATE_ASK_GAME:
-            # Elección: 👍 QR  |  ✋ Jugar
-            lines = ["¿Quieres saber más o jugar?", "👍 QR   |   ✋ Jugar laberinto"]
+            # Instrucciones claras
+            lines = [
+                "¿Qué quieres hacer?",
+                "👍 Ver QR    |    ✌ Jugar laberinto",
+                f"Mantén ✌ por {V_HOLD:.1f}s para jugar"
+            ]
             view = ui.render_greeting(view, lines)
-
-            thumbs_up = any(thumbs.is_thumbs_up(h) for h in hands)
-            open_hand = any(is_hand_open(h) for h in hands)
-
-            if thumbs_up:
-                state = STATE_SHOW_QR
-                last_trigger_t = now
-                metrics.log("choice", "QR")
-                if not muted: tts.speak_async(qr_tts)
-            elif open_hand:
-                state = STATE_GAME
-                last_trigger_t = now
-                metrics.log("choice", "GAME")
-                if not muted: tts.speak_async("¡Vamos a jugar!")
-
+            # Detecciones
+            thumbs_up_n = sum(1 for h in hands if thumbs.is_thumbs_up(h))
+            has_v = any(is_v_sign(h) for h in hands)
+            now = time.time()
+            # --- Lógica de hold para ✌ (Juego) ---
+            if has_v:
+                if v_hold_t0 is None:
+                   v_hold_t0 = now
+                hold_elapsed = now - v_hold_t0
+                hold_progress = max(0.0, min(1.0, hold_elapsed / max(0.001, V_HOLD)))
+                hold_remain = max(0.0, V_HOLD - hold_elapsed)
+                if SHOW_COUNTDOWN:
+                    bar_w = int(width * 0.42)
+                    bar_h = 16
+                    bar_x = (width - bar_w) // 2
+                    bar_y = int(height * 0.72)
+                    txt = f"Iniciando juego en {hold_remain:.1f}s"
+                    if 'main_font_panel' in locals() and main_font_panel:
+                        view = draw_text(view, txt, (bar_x, bar_y - 26), main_font_panel, (255, 255, 255))
+                    else:
+                        cv2.putText(view, txt, (bar_x, bar_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+                                    cv2.LINE_AA)
+                    draw_progress_bar(view, bar_x, bar_y, bar_w, bar_h, hold_progress, color=(60, 180, 75))
+                if hold_progress >= 1.0:
+                    state = STATE_GAME
+                    last_trigger_t = now
+                    metrics.log("choice", "GAME_v_sign_hold")
+                    if not muted:
+                       tts.speak_async("¡Vamos a jugar! Toca Inicio para comenzar.")
+                    v_hold_t0 = None
+                    qr_hold_t0 = None
+                    # inicialización del maze se mantiene en tu bloque STATE_GAME
+                    # (no hacemos nada más aquí)
+            else:
+                v_hold_t0 = None
+                # --- Lógica de hold para 👍 (QR) ---
+                if thumbs_up_n >= 1:
+                    if qr_hold_t0 is None:
+                        qr_hold_t0 = now
+                    q_elapsed = now - qr_hold_t0
+                    q_prog = max(0.0, min(1.0, q_elapsed / max(0.001, QR_HOLD)))
+                    q_rem = max(0.0, QR_HOLD - q_elapsed)
+                    if SHOW_COUNTDOWN:
+                        bar_w = int(width * 0.32)
+                        bar_h = 12
+                        bar_x = (width - bar_w) // 2
+                        bar_y = int(height * 0.72) + 36
+                        txt = f"Mostrando QR en {q_rem:.1f}s"
+                        if 'main_font_panel' in locals() and main_font_panel:
+                            view = draw_text(view, txt, (bar_x, bar_y - 22), main_font_panel, (255, 255, 255))
+                        else:
+                            cv2.putText(view, txt, (bar_x, bar_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255),
+                                        2, cv2.LINE_AA)
+                        draw_progress_bar(view, bar_x, bar_y, bar_w, bar_h, q_prog, color=(80, 160, 255))
+                    if q_prog >= 1.0:
+                        state = STATE_SHOW_QR
+                        last_trigger_t = now
+                        metrics.log("choice", "QR_single_thumb_hold")
+                        if not muted:
+                           tts.speak_async("Perfecto. Aquí tienes el código QR.")
+                        v_hold_t0 = None
+                        qr_hold_t0 = None
+                else:
+                    qr_hold_t0 = None
+            # Timeout
             if elapsed > 12:
-                state = STATE_IDLE; metrics.log("timeout_ask_game")
-
+                state = STATE_IDLE
+                metrics.log("timeout_ask_game")
+                v_hold_t0 = None
+                qr_hold_t0 = None
         elif state == STATE_WAIT_THUMBS:
             # Compatibilidad (no se usa en el nuevo flujo)
             thumbs_text = "Muéstranos Pulgar arriba 👍 para ver más"
@@ -512,12 +678,10 @@ def main():
                 if not muted: tts.speak_async(qr_tts)
             if elapsed > 12:
                 state = STATE_IDLE; metrics.log("timeout_wait_thumbs")
-
         elif state == STATE_SHOW_QR:
             view = ui.render_qr_panel(view, qr_url)
             if elapsed > 4.5:
                 state = STATE_COOLDOWN; last_trigger_t = now; metrics.log("qr_shown")
-
         elif state == STATE_GAME:
             # Inicializar el laberinto al entrar al estado con el tamaño real del VIEW (ya espejo)
             if maze_game is None:
@@ -588,27 +752,61 @@ def main():
             tx, ty = x0 + 10, y0 + 10
 
             if main_font_panel:
-                view = draw_text(view, "Reconocimiento (en vivo)", (tx, ty+2), main_font_panel, (255,255,255))
-                view = draw_text(view, f"Manos detectadas: {len(hands)}", (tx, ty+26), main_font_panel, (220,220,220))
+                # Título y conteos básicos
+                view = draw_text(view, "Reconocimiento (en vivo)", (tx, ty + 2), main_font_panel, (255, 255, 255))
+                view = draw_text(view, f"Manos detectadas: {len(hands)}", (tx, ty + 26), main_font_panel,
+                                 (220, 220, 220))
+
+                # Persona presente
                 draw_bool_dot(view, (tx + 10, ty + 54), person_present)
-                view = draw_text(view, f"Persona detectada: {'Si' if person_present else 'No'}", (tx + 30, ty + 50), main_font_panel)
+                view = draw_text(view, f"Persona detectada: {'Si' if person_present else 'No'}", (tx + 30, ty + 50),
+                                 main_font_panel)
+
+                # "hola" izquierda (wave)
                 lratio = left_dbg["peaks"] / max(1, wave_left.min_peaks)
                 draw_bool_dot(view, (tx + 10, ty + 84), left_dbg["hand_raised"])
-                view = draw_text(view, f"hola (izq): picos {left_dbg['peaks']}/{wave_left.min_peaks}  x.ptp={left_dbg['x_ptp']:.3f}", (tx + 30, ty + 80), main_font_panel)
+                view = draw_text(view,
+                                 f"hola (izq): hits {left_dbg['peaks']}/{wave_left.min_peaks}  x.ptp={left_dbg['x_ptp']:.3f}",
+                                 (tx + 30, ty + 80), main_font_panel)
                 draw_progress_bar(view, tx + 30, ty + 104, int(panel_w * 0.28), 10, lratio)
+
+                # "hola" derecha (wave)
                 rratio = right_dbg["peaks"] / max(1, wave_right.min_peaks)
                 draw_bool_dot(view, (tx + 10, ty + 134), right_dbg["hand_raised"])
-                view = draw_text(view, f"hola (der): picos {right_dbg['peaks']}/{wave_right.min_peaks}  x.ptp={right_dbg['x_ptp']:.3f}", (tx + 30, ty + 130), main_font_panel)
+                view = draw_text(view,
+                                 f"hola (der): hits {right_dbg['peaks']}/{wave_right.min_peaks}  x.ptp={right_dbg['x_ptp']:.3f}",
+                                 (tx + 30, ty + 130), main_font_panel)
                 draw_progress_bar(view, tx + 30, ty + 154, int(panel_w * 0.28), 10, rratio)
-                any_thumb = any(thumbs.debug(h)["thumb_up"] and (thumbs.debug(h)["folded_all"] or not thumbs.require_folded) for h in hands)
-                any_open  = any(is_hand_open(h) for h in hands)
-                draw_bool_dot(view, (tx + 10, ty + 184), any_thumb)
-                view = draw_text(view, f"Pulgar arriba: {'Si' if any_thumb else 'No'}", (tx + 30, ty + 180), main_font_panel)
-                draw_bool_dot(view, (tx + 10, ty + 214), any_open)
-                view = draw_text(view, f"Mano abierta (jugar): {'Si' if any_open else 'No'}", (tx + 30, ty + 210), main_font_panel)
-                view = draw_text(view, f"Estado: {state_name}    Mute: {'ON' if muted else 'OFF'}", (tx + 10, ty + 238), main_font_panel, (220,220,220))
+
+                # Señales (pulgares y ✌ para juego)
+                thumbs_up_n = sum(1 for h in hands if thumbs.is_thumbs_up(h))
+                has_v = any(is_v_sign(h) for h in hands)
+
+                # Pulgares arriba (0/1/2) - 1 = QR
+                draw_bool_dot(view, (tx + 10, ty + 184), thumbs_up_n > 0)
+                view = draw_text(
+                    view,
+                    f"Pulgares arriba: {thumbs_up_n}  (1 = QR)",
+                    (tx + 30, ty + 180),
+                    main_font_panel
+                )
+
+                # ✌ (juego) con render de emoji
+                draw_bool_dot(view, (tx + 10, ty + 214), has_v)
+                view = draw_text_mix(
+                    view,
+                    f"✌ (juego): {'Si' if has_v else 'No'}",
+                    (tx + 30, ty + 210),
+                    main_font_panel,
+                    emoji_font_panel
+                )
+
+                # Estado y mute
+                view = draw_text(view, f"Estado: {state_name}    Mute: {'ON' if muted else 'OFF'}",
+                                 (tx + 10, ty + 238), main_font_panel, (220, 220, 220))
             else:
-                cv2.putText(view, "Panel no disponible: Falta fuente TTF", (tx, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.putText(view, "Panel no disponible: Falta fuente TTF",
+                            (tx, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Indicador mute
         if muted and mute_icon is not None:
