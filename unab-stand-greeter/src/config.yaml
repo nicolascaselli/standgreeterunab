@@ -1,11 +1,19 @@
-camera_index: 2
+camera_index: 0
 #resolution: [1920, 1080]
-resolution: [1024, 768]
+resolution: [1600, 900]
 fullscreen: false
 position: [80, 60]  # x, y desde la esquina superior izquierda
 always_on_top: false  # true = siempre visible sobre otras ventanas (Windows)
 idle_text: "Acércate y salúdanos"
 prompt_wave_text: "Levanta tu mano y saluda 👋"
+window:
+  size: [1600, 900]       # que coincida con resolution
+# mínimo permitido para el render (por seguridad)
+min_resolution: [1280, 720]
+
+# (opcional) pedimos a la cámara al menos HD
+camera:
+  min_resolution: [1280, 720]
 greeting_texts:
   - "¡Hola! Bienvenido/a a Ingeniería Civil Informática UNAB"
   - "Si quieres saber más, muéstranos el pulgar hacia arriba 👍"
@@ -31,6 +39,7 @@ brand:
   text: "#FFFFFF"
 assets:
   logo_path: "src/assets/logo_unab.png"
+  logo_height_ratio: 0.20   # 20% de la altura de la ventana (ajústalo a gusto: 0.18–0.26)
 metrics:
   csv_path: "metrics.csv"
 keys:
@@ -47,3 +56,17 @@ debug:
     width_ratio: 0.25     # ancho del panel relativo al ancho de la pantalla
     height_ratio: 0.28    # alto del panel relativo al alto de la pantalla
     alpha: 0.65           # transparencia del panel
+maze:
+  grid_cols: 11
+  grid_rows: 7
+  panel_ratio_w: 0.72
+  panel_ratio_h: 0.58
+  thin_ratio: 0.25
+  collision_rel: 0.006
+  start_goal_pad: 0.30
+  trail_thickness_rel: 0.022
+interaction:
+  v_sign_hold_seconds: 0.8   # mantener ✌ este tiempo para jugar
+  thumb_hold_seconds: 0.3    # mantener 👍 un instante para QR (evita falsos positivos)
+  show_countdown: true
+
